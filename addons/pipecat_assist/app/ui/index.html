@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pipecat Assist</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="/assets/logo.svg" alt="" />
+          <div>
+            <h1>Pipecat Assist</h1>
+            <span id="status-pill" class="pill">starting</span>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="section-head">
+            <h2>Flows</h2>
+            <button id="add-flow" class="ghost" type="button">Add</button>
+          </div>
+          <div id="flow-list" class="flow-list"></div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h2 id="flow-title">Configuration</h2>
+            <p id="flow-subtitle">Runtime settings</p>
+          </div>
+          <div class="actions">
+            <button id="check-mcp" class="secondary" type="button">Check MCP</button>
+            <button id="save-config" type="button">Save</button>
+          </div>
+        </header>
+
+        <section class="band">
+          <div class="grid two">
+            <label>
+              OpenAI API key
+              <input id="openai_api_key" type="password" autocomplete="off" />
+            </label>
+            <label>
+              Text model
+              <input id="text_model" type="text" />
+            </label>
+            <label>
+              Home Assistant MCP URL
+              <input id="ha_mcp_url" type="url" placeholder="http://supervisor/core/api/mcp" />
+            </label>
+            <label>
+              Home Assistant token
+              <input id="longlived_token" type="password" autocomplete="off" />
+            </label>
+          </div>
+        </section>
+
+        <section class="band">
+          <div class="grid three">
+            <label>
+              Runner host
+              <input id="runner_host" type="text" />
+            </label>
+            <label>
+              Runner port
+              <input id="runner_port" type="number" min="1024" max="65535" />
+            </label>
+            <label class="toggle-line">
+              <input id="esp32_mode" type="checkbox" />
+              <span>ESP32 mode</span>
+            </label>
+          </div>
+          <label class="wide">
+            Pipecat ESP32 URL
+            <div class="copy-row">
+              <input id="runner_offer_url" readonly />
+              <button id="copy-url" class="secondary" type="button">Copy</button>
+            </div>
+          </label>
+        </section>
+
+        <section class="band">
+          <div class="grid two">
+            <label>
+              Flow name
+              <input id="flow_name" type="text" />
+            </label>
+            <label>
+              Flow ID
+              <input id="flow_id" type="text" />
+            </label>
+            <label>
+              Realtime model
+              <input id="flow_model" type="text" />
+            </label>
+            <label>
+              Voice
+              <input id="flow_voice" type="text" />
+            </label>
+            <label>
+              Speed
+              <input id="flow_speed" type="number" min="0.25" max="1.5" step="0.05" />
+            </label>
+            <label>
+              Language
+              <input id="flow_language" type="text" placeholder="pl, en, empty = auto" />
+            </label>
+          </div>
+          <label class="wide">
+            Instructions
+            <textarea id="flow_instructions" rows="7"></textarea>
+          </label>
+          <label class="wide">
+            Greeting
+            <input id="flow_greeting" type="text" />
+          </label>
+        </section>
+
+        <section class="band">
+          <div class="grid three">
+            <label>
+              Transcription
+              <input id="flow_transcription_model" type="text" />
+            </label>
+            <label>
+              Noise reduction
+              <select id="flow_noise_reduction">
+                <option value="off">off</option>
+                <option value="near_field">near field</option>
+                <option value="far_field">far field</option>
+              </select>
+            </label>
+            <label>
+              VAD
+              <select id="flow_vad_mode">
+                <option value="semantic_vad">semantic</option>
+                <option value="server_vad">server</option>
+              </select>
+            </label>
+            <label>
+              VAD eagerness
+              <select id="flow_vad_eagerness">
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="auto">auto</option>
+              </select>
+            </label>
+            <label>
+              Max output tokens
+              <input id="flow_max_output_tokens" type="number" min="1" max="4096" />
+            </label>
+            <label>
+              Reasoning effort
+              <select id="flow_reasoning_effort">
+                <option value="">default</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </label>
+            <label class="toggle-line">
+              <input id="flow_interrupt_response" type="checkbox" />
+              <span>Interrupt response</span>
+            </label>
+            <label class="toggle-line">
+              <input id="flow_mcp_enabled" type="checkbox" />
+              <span>MCP tools</span>
+            </label>
+            <label class="toggle-line">
+              <input id="flow_video_enabled" type="checkbox" />
+              <span>Video input</span>
+            </label>
+          </div>
+          <label class="wide">
+            MCP allowlist
+            <input id="flow_mcp_tool_allowlist" type="text" placeholder="tool_one, tool_two" />
+          </label>
+        </section>
+
+        <section class="band">
+          <div class="grid two">
+            <label>
+              Satellite secret
+              <input id="satellite_shared_secret" type="password" autocomplete="off" />
+            </label>
+            <label>
+              Log level
+              <select id="log_level">
+                <option>DEBUG</option>
+                <option>INFO</option>
+                <option>WARNING</option>
+                <option>ERROR</option>
+              </select>
+            </label>
+          </div>
+          <div id="message" class="message" role="status"></div>
+        </section>
+      </main>
+    </div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
+

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Compile Python sources
+        run: |
+          python -m compileall addons/pipecat_assist/app custom_components/pipecat_assist
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build add-on image
+        run: docker build --build-arg BUILD_VERSION=dev --build-arg BUILD_ARCH=amd64 addons/pipecat_assist
+

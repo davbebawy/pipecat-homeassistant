@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Pipecat Assist",
+        "description": "Connect Home Assistant Conversation to the Pipecat Assist add-on.",
+        "data": {
+          "url": "Add-on URL",
+          "token": "Bearer token",
+          "flow_id": "Flow ID"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to Pipecat Assist."
+    },
+    "abort": {
+      "already_configured": "Pipecat Assist is already configured."
+    }
+  }
+}
+
