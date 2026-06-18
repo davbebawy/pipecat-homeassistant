@@ -21,8 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      app-version: ${{ steps.release.outputs.app-version }}
-      image-tags: ${{ steps.release.outputs.image-tags }}
     steps:
       - uses: actions/checkout@v6
       - name: Prepare build matrix
@@ -32,23 +30,6 @@ jobs:
           architectures: ${{ env.ARCHITECTURES }}
           image-name: ${{ env.IMAGE_NAME }}
           registry-prefix: ${{ env.REGISTRY_PREFIX }}
-      - name: Prepare release tags
-        id: release
-        shell: bash
-        run: |
-          release_tag="${{ github.event.release.tag_name }}"
-          app_version="${release_tag#v}"
-
-          {
-            echo "image-tags<<EOF"
-            echo "${release_tag}"
-            if [[ "${app_version}" != "${release_tag}" ]]; then
-              echo "${app_version}"
-            fi
-            echo "latest"
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
-          echo "app-version=${app_version}" >> "${GITHUB_OUTPUT}"
 
   build:
     name: Build ${{ matrix.arch }}
@@ -59,6 +40,23 @@ jobs:
       matrix: ${{ fromJSON(needs.init.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
+      - name: Prepare release tags
+        id: release
+        shell: bash
+        run: |
+          release_tag="${{ github.event.release.tag_name }}"
+          app_version="${release_tag#v}"
+
+          {
+            echo "image_tags<<EOF"
+            echo "${release_tag}"
+            if [[ "${app_version}" != "${release_tag}" ]]; then
+              echo "${app_version}"
+            fi
+            echo "latest"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+          echo "app_version=${app_version}" >> "${GITHUB_OUTPUT}"
       - name: Build and push image
         uses: home-assistant/builder/actions/build-image@2026.06.0
         with:
@@ -69,9 +67,9 @@ jobs:
           context: addons/pipecat_assist
           cosign: "true"
           image: ${{ matrix.image }}
-          image-tags: ${{ needs.init.outputs.image-tags }}
+          image-tags: ${{ steps.release.outputs.image_tags }}
           push: "true"
-          version: ${{ needs.init.outputs.app-version }}
+          version: ${{ steps.release.outputs.app_version }}
 
   manifest:
     name: Publish manifest
@@ -79,11 +77,27 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare release tags
+        id: release
+        shell: bash
+        run: |
+          release_tag="${{ github.event.release.tag_name }}"
+          app_version="${release_tag#v}"
+
+          {
+            echo "image_tags<<EOF"
+            echo "${release_tag}"
+            if [[ "${app_version}" != "${release_tag}" ]]; then
+              echo "${app_version}"
+            fi
+            echo "latest"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
       - name: Publish multi-arch manifest
         uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.06.0
         with:
           architectures: ${{ env.ARCHITECTURES }}
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
           image-name: ${{ env.IMAGE_NAME }}
-          image-tags: ${{ needs.init.outputs.image-tags }}
+          image-tags: ${{ steps.release.outputs.image_tags }}
           registry-prefix: ${{ env.REGISTRY_PREFIX }}
