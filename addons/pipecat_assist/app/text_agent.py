@@ -60,6 +60,7 @@ async def run_text_conversation(
     language: str | None,
     conversation_id: str | None,
     flow_id: str | None = None,
+    mcp_token: str = "",
 ) -> dict[str, Any]:
     """Run a text request through OpenAI with HA MCP tools."""
 
@@ -115,10 +116,10 @@ async def run_text_conversation(
     tools: list[dict[str, Any]] = []
 
     bridge: HomeAssistantMCPBridge | None = None
-    if flow.mcp_enabled and config.effective_mcp_token:
+    if flow.mcp_enabled and mcp_token:
         bridge = HomeAssistantMCPBridge(
             config.effective_mcp_url,
-            config.effective_mcp_token,
+            mcp_token,
             flow.mcp_tool_allowlist,
         )
         try:

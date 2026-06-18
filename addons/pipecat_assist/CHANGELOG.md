@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7
+
+- Added Home Assistant MCP OAuth login from the Runtime panel.
+- Added OAuth access-token refresh before MCP checks, text conversations, and
+  realtime voice sessions.
+- Kept manual long-lived access tokens as a fallback for environments where
+  OAuth cannot complete.
+- Updated Runtime MCP status, readiness checks, and docs to prefer OAuth over
+  Supervisor-token fallback.
+
 ## 0.1.6
 
 - Prevented Home Assistant MCP authentication failures from crashing realtime

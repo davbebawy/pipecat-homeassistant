@@ -8,8 +8,9 @@ Pipecat Assist runs a realtime Pipecat voice agent inside Home Assistant. It
 connects to Home Assistant MCP for device control, serves a web UI through
 Ingress, and exposes a SmallWebRTC endpoint for Pipecat ESP32 satellites.
 
-Open the web UI after starting the add-on to manage pipelines, cloud/local AI
-integrations, MCP settings, the browser voice test, and the satellite URL.
+Open the web UI after starting the add-on to connect Home Assistant MCP through
+OAuth, manage pipelines, configure cloud/local AI integrations, run the browser
+voice test, and copy the satellite URL.
 
 For Google Gemini Live setup and testing through Home Assistant Assist, see
 `docs/gemini-live-home-assistant.md` in the repository.

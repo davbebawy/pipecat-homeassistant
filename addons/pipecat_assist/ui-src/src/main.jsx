@@ -30,6 +30,8 @@ const API = {
   config: "api/assist/config",
   status: "api/assist/status",
   mcp: "api/assist/mcp/check",
+  oauthStart: "api/assist/oauth/start",
+  oauthDisconnect: "api/assist/oauth/disconnect",
 };
 
 const REDACTED = "__redacted__";
@@ -280,6 +282,7 @@ function secretPlaceholder(item, key, fallback = "") {
 function integrationSummary(integration) {
   if (!integration.enabled) return "disabled";
   if (integration.kind === "home_assistant_mcp") {
+    if (secretStatus(integration, "oauth_refresh_token") === "configured") return "OAuth connected";
     return secretStatus(integration, "token") === "configured" ? "token saved" : "token missing";
   }
   if (["gemini", "openai", "anthropic", "azure_openai"].includes(integration.kind)) {
@@ -501,6 +504,11 @@ function App() {
       project: "",
       access_key_id: "",
       secret_key: "",
+      oauth_access_token: "",
+      oauth_refresh_token: "",
+      oauth_expires_at: 0,
+      oauth_client_id: "",
+      oauth_token_url: "",
     };
     updateConfig((draft) => {
       draft.integrations.push(integration);
@@ -559,6 +567,38 @@ function App() {
         ? { text: `MCP connected: ${result.tool_count} tools`, tone: "ok" }
         : { text: result.error || "MCP check failed", tone: "error" },
     );
+  }
+
+  async function startMcpOAuth() {
+    const clientBase = new URL(".", window.location.href).href;
+    const redirectUri = new URL("api/assist/oauth/callback", clientBase).href;
+    const authorizeUrl = new URL("/auth/authorize", window.location.origin).href;
+    const response = await fetch(API.oauthStart, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ha_url: window.location.origin,
+        authorize_url: authorizeUrl,
+        client_id: clientBase,
+        redirect_uri: redirectUri,
+      }),
+    });
+    if (!response.ok) {
+      setMessage({ text: await response.text(), tone: "error" });
+      return;
+    }
+    const result = await response.json();
+    window.location.assign(result.auth_url);
+  }
+
+  async function disconnectMcpOAuth() {
+    const response = await fetch(API.oauthDisconnect, { method: "POST" });
+    if (!response.ok) {
+      setMessage({ text: await response.text(), tone: "error" });
+      return;
+    }
+    setConfig(ensureShape(await response.json()));
+    setMessage({ text: "Home Assistant OAuth disconnected", tone: "ok" });
   }
 
   async function copyOfferUrl() {
@@ -683,6 +723,8 @@ function App() {
             flow={selectedFlow}
             status={status}
             checkMcp={checkMcp}
+            startMcpOAuth={startMcpOAuth}
+            disconnectMcpOAuth={disconnectMcpOAuth}
             copyOfferUrl={copyOfferUrl}
             updateConfig={updateConfig}
             updateIntegration={updateIntegration}
@@ -1279,13 +1321,14 @@ function voiceReadiness(config, flow) {
   }
 
   const mcp = config.integrations.find((item) => item.kind === "home_assistant_mcp");
+  const hasMcpOAuth = config.mcp_token_source === "oauth" || secretStatus(mcp, "oauth_refresh_token") === "configured";
   if (flow.mcp_enabled && config.mcp_token_source === "supervisor" && secretStatus(mcp, "token") === "missing") {
     return {
       ok: true,
-      detail: "Ready. MCP will use the Supervisor token; if Check MCP returns 401, paste a long-lived token.",
+      detail: "Ready. MCP will use the Supervisor token; if Check MCP returns 401, connect OAuth.",
     };
   }
-  if (flow.mcp_enabled && secretStatus(mcp, "token") === "missing" && !config.longlived_token_configured) {
+  if (flow.mcp_enabled && !hasMcpOAuth && secretStatus(mcp, "token") === "missing" && !config.longlived_token_configured) {
     return {
       ok: true,
       detail: "Ready. Home Assistant MCP token is missing, so device tools may be unavailable.",
@@ -1321,6 +1364,7 @@ function friendlyWebRtcError(err) {
 
 function mcpStatusLabel(config, status) {
   const source = status?.mcp_token_source || config.mcp_token_source || "";
+  if (source === "oauth") return "OAuth connected";
   if (source === "integration" || source === "long-lived") return "token ready";
   if (source === "supervisor") return "supervisor token";
   return "token pending";
@@ -1430,7 +1474,7 @@ function VoiceTest({ config, flow }) {
               version: "1.4.0",
               about: {
                 library: "pipecat-assist-ui",
-                library_version: "0.1.6",
+                library_version: "0.1.7",
                 platform: "browser",
               },
             },
@@ -1537,8 +1581,24 @@ function VoiceTest({ config, flow }) {
   );
 }
 
-function RuntimeView({ config, flow, status, checkMcp, copyOfferUrl, updateConfig, updateIntegration }) {
+function RuntimeView({
+  config,
+  flow,
+  status,
+  checkMcp,
+  startMcpOAuth,
+  disconnectMcpOAuth,
+  copyOfferUrl,
+  updateConfig,
+  updateIntegration,
+}) {
   const mcp = config.integrations.find((integration) => integration.kind === "home_assistant_mcp");
+  const hasMcpOAuth = config.mcp_token_source === "oauth" || secretStatus(mcp, "oauth_refresh_token") === "configured";
+  const tokenPlaceholder = hasMcpOAuth
+    ? "OAuth connected"
+    : mcp?.token_configured
+      ? "configured"
+      : "OAuth recommended";
   return (
     <div className="workspace-grid">
       <section className="panel main-panel">
@@ -1547,24 +1607,34 @@ function RuntimeView({ config, flow, status, checkMcp, copyOfferUrl, updateConfi
             <h3>Home Assistant</h3>
             <span>{mcpStatusLabel(config, status)}</span>
           </div>
-          <Button icon={RefreshCw} variant="secondary" onClick={checkMcp}>
-            Check MCP
-          </Button>
+          <div className="button-row">
+            <Button icon={KeyRound} variant="primary" onClick={startMcpOAuth}>
+              Connect OAuth
+            </Button>
+            {hasMcpOAuth && (
+              <Button icon={X} variant="secondary" onClick={disconnectMcpOAuth}>
+                Disconnect
+              </Button>
+            )}
+            <Button icon={RefreshCw} variant="secondary" onClick={checkMcp}>
+              Check MCP
+            </Button>
+          </div>
         </div>
         <div className="form-grid">
           <Field label="MCP URL">
             <input
               value={mcp?.base_url || ""}
               placeholder={config.effective_mcp_url}
-              onChange={(event) => updateIntegration(mcp.id, (item) => ({ ...item, base_url: event.target.value }))}
+              onChange={(event) => updateIntegration(mcp?.id, (item) => ({ ...item, base_url: event.target.value }))}
             />
           </Field>
           <Field label="Access token">
             <input
               type="password"
               value={secretValue(mcp?.token)}
-              placeholder={mcp?.token_configured ? "configured" : "Supervisor token"}
-              onChange={(event) => updateIntegration(mcp.id, (item) => ({ ...item, token: event.target.value }))}
+              placeholder={tokenPlaceholder}
+              onChange={(event) => updateIntegration(mcp?.id, (item) => ({ ...item, token: event.target.value }))}
             />
           </Field>
         </div>

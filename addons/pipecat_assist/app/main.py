@@ -8,12 +8,13 @@ import hmac
 import os
 import time
 from contextlib import suppress
+from html import escape
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from loguru import logger
 from starlette.staticfiles import StaticFiles
 
@@ -47,6 +48,13 @@ from app.config import (
     FlowConfig,
     IntegrationConfig,
     RuntimeConfig,
+)
+from app.ha_oauth import (
+    build_authorize_url,
+    clear_oauth,
+    exchange_code,
+    oauth_token_url_for_store,
+    resolve_mcp_token,
 )
 from app.mcp_bridge import HomeAssistantMCPBridge, check_mcp
 from app.text_agent import run_text_conversation
@@ -156,7 +164,66 @@ async def api_update_config(payload: dict[str, Any], request: Request):
 async def api_check_mcp(payload: dict[str, Any] | None = None):
     config = STORE.load()
     flow = config.selected_flow((payload or {}).get("flow_id"))
-    return await check_mcp(config.effective_mcp_url, config.effective_mcp_token, flow.mcp_tool_allowlist)
+    try:
+        token = await resolve_mcp_token(STORE)
+    except Exception as err:
+        logger.warning("MCP token resolution failed: {}", err)
+        return {"ok": False, "error": str(err), "tool_count": 0, "tools": []}
+    return await check_mcp(config.effective_mcp_url, token, flow.mcp_tool_allowlist)
+
+
+@app.post("/api/assist/oauth/start")
+async def api_oauth_start(payload: dict[str, Any]):
+    ha_url = str(payload.get("ha_url") or "").rstrip("/")
+    authorize_url = str(payload.get("authorize_url") or "")
+    client_id = str(payload.get("client_id") or "")
+    redirect_uri = str(payload.get("redirect_uri") or "")
+    if not ha_url or not authorize_url or not client_id or not redirect_uri:
+        raise HTTPException(status_code=400, detail="ha_url, authorize_url, client_id and redirect_uri are required")
+    token_url = oauth_token_url_for_store(STORE, ha_url, str(payload.get("token_url") or ""))
+    auth_url = build_authorize_url(
+        authorize_url=authorize_url,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        token_url=token_url,
+    )
+    return {"auth_url": auth_url, "client_id": client_id, "redirect_uri": redirect_uri}
+
+
+@app.get("/api/assist/oauth/callback", include_in_schema=False)
+async def api_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    if error:
+        return HTMLResponse(
+            f"<h1>Pipecat Assist OAuth failed</h1><p>{escape(error)}</p>",
+            status_code=400,
+        )
+    if not code or not state:
+        return HTMLResponse(
+            "<h1>Pipecat Assist OAuth failed</h1><p>Missing authorization code or state.</p>",
+            status_code=400,
+        )
+    try:
+        await exchange_code(STORE, code=code, state=state)
+    except Exception as err:
+        logger.warning("Home Assistant OAuth callback failed: {}", err)
+        return HTMLResponse(
+            f"<h1>Pipecat Assist OAuth failed</h1><p>{escape(str(err))}</p>",
+            status_code=400,
+        )
+    return HTMLResponse(
+        "<h1>Pipecat Assist is connected</h1>"
+        "<p>Home Assistant OAuth is configured. You can close this tab and return to Pipecat Assist.</p>"
+    )
+
+
+@app.post("/api/assist/oauth/disconnect")
+async def api_oauth_disconnect(request: Request):
+    clear_oauth(STORE)
+    config = STORE.load()
+    data = config.public_dict()
+    data["runner_offer_url"] = _offer_url(config, request)
+    data["runner_offer_path"] = _offer_path(config)
+    return data
 
 
 @app.post("/api/assist/conversation")
@@ -164,12 +231,19 @@ async def api_conversation(payload: dict[str, Any]):
     text = str(payload.get("text", "")).strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
+    config = STORE.load()
+    try:
+        mcp_token = await resolve_mcp_token(STORE)
+    except Exception as err:
+        logger.warning("Starting text conversation without MCP token: {}", err)
+        mcp_token = ""
     return await run_text_conversation(
-        STORE.load(),
+        config,
         text=text,
         language=payload.get("language"),
         conversation_id=payload.get("conversation_id"),
         flow_id=payload.get("flow_id"),
+        mcp_token=mcp_token,
     )
 
 
@@ -348,6 +422,7 @@ async def run_bot(
     runner_args: RunnerArguments,
     config: RuntimeConfig,
     flow: FlowConfig,
+    mcp_token: str = "",
 ):
     """Run one Pipecat session."""
 
@@ -369,10 +444,10 @@ async def run_bot(
 
     bridge: HomeAssistantMCPBridge | None = None
     tools_schema = None
-    if flow.mcp_enabled and config.effective_mcp_token:
+    if flow.mcp_enabled and mcp_token:
         bridge = HomeAssistantMCPBridge(
             config.effective_mcp_url,
-            config.effective_mcp_token,
+            mcp_token,
             flow.mcp_tool_allowlist,
         )
         try:
@@ -459,8 +534,13 @@ async def bot(runner_args: RunnerArguments):
     config = STORE.load()
     body = runner_args.body if isinstance(runner_args.body, dict) else {}
     flow = config.selected_flow(body.get("flow_id"))
+    try:
+        mcp_token = await resolve_mcp_token(STORE)
+    except Exception as err:
+        logger.warning("Starting without MCP token: {}", err)
+        mcp_token = ""
     transport = await create_transport(runner_args, _transport_params(flow))
-    await run_bot(transport, runner_args, config, flow)
+    await run_bot(transport, runner_args, config, flow, mcp_token=mcp_token)
 
 
 def main() -> None:

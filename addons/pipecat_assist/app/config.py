@@ -24,7 +24,14 @@ DEFAULT_INSTRUCTIONS = (
 DEFAULT_GEMINI_TEXT_MODEL = "gemini-3.5-flash"
 DEFAULT_GEMINI_LIVE_MODEL = "models/gemini-3.1-flash-live-preview"
 DEFAULT_GEMINI_LIVE_VOICE = "Charon"
-SECRET_FIELDS = ("api_key", "token", "secret_key", "access_key_id")
+SECRET_FIELDS = (
+    "api_key",
+    "token",
+    "secret_key",
+    "access_key_id",
+    "oauth_access_token",
+    "oauth_refresh_token",
+)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -87,6 +94,11 @@ class IntegrationConfig(BaseModel):
     project: str = ""
     access_key_id: str = ""
     secret_key: str = ""
+    oauth_access_token: str = ""
+    oauth_refresh_token: str = ""
+    oauth_expires_at: float = 0
+    oauth_client_id: str = ""
+    oauth_token_url: str = ""
 
     @field_validator("id")
     @classmethod
@@ -351,6 +363,19 @@ class RuntimeConfig(BaseModel):
 
         integration = self.mcp_integration
         return (
+            (integration.oauth_access_token if integration else "")
+            or (integration.token if integration else "")
+            or self.longlived_token
+            or os.getenv("LONGLIVED_TOKEN")
+            or os.getenv("SUPERVISOR_TOKEN", "")
+        )
+
+    @property
+    def fallback_mcp_token(self) -> str:
+        """Return the non-OAuth Home Assistant token used for MCP."""
+
+        integration = self.mcp_integration
+        return (
             (integration.token if integration else "")
             or self.longlived_token
             or os.getenv("LONGLIVED_TOKEN")
@@ -362,6 +387,8 @@ class RuntimeConfig(BaseModel):
         """Return where the effective MCP token came from."""
 
         integration = self.mcp_integration
+        if integration and integration.oauth_refresh_token:
+            return "oauth"
         if integration and integration.token:
             return "integration"
         if self.longlived_token or os.getenv("LONGLIVED_TOKEN"):

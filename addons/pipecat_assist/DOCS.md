@@ -29,10 +29,20 @@ Anthropic, Bedrock, Azure/OpenAI-compatible APIs, Ollama, local runtimes, and
 Home Assistant MCP.
 
 `Runtime`
-: Configure Home Assistant MCP access, the satellite public host, and the
-shared satellite secret. The Runtime page also includes a browser voice test
-that connects to the selected pipeline through the same SmallWebRTC offer route
-used by satellites.
+: Connect Home Assistant MCP through OAuth, configure the satellite public
+host and shared satellite secret, and run a browser voice test that connects to
+the selected pipeline through the same SmallWebRTC offer route used by
+satellites.
+
+### Home Assistant MCP OAuth
+
+Open **Runtime > Home Assistant**, select **Connect OAuth**, approve the
+request in Home Assistant, then return to the add-on and select **Check MCP**.
+The add-on stores the returned refresh token in its private configuration and
+refreshes short-lived access tokens automatically before using `/api/mcp`.
+
+The manual access-token field is kept only as a fallback for environments
+where OAuth cannot complete.
 
 ## Gemini Live
 
