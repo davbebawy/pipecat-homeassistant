@@ -18,8 +18,7 @@ also includes composed realtime profiles such as `Soniox + OpenAI + Cartesia`,
 ElevenLabs`. Official Pipecat Flows can be enabled inside composed realtime
 pipelines.
 
-For Google Gemini Live setup and testing through Home Assistant Assist, see
-`docs/gemini-live-home-assistant.md` in the repository.
+For setup, testing, and troubleshooting, see `DOCS.md`.
 
 Home Assistant displays this add-on with `icon.png` and `logo.png` from this
 directory. The Ingress UI uses the same Pipecat mark in `/assets/logo.svg`.

@@ -60,11 +60,68 @@ voice test or satellite session. The add-on stores separate input and output
 WAV files under `/data/audio-debug` and shows download links in the Runtime
 panel. Clear the captures after troubleshooting if they include private audio.
 
-## Gemini Live
+## Default Gemini Live setup
 
-For a Gemini Live setup, browser voice test, and Home Assistant Assist test
-path, see
-`docs/gemini-live-home-assistant.md` in the repository.
+Gemini Live is the first-run speech-to-speech pipeline. It receives audio from
+SmallWebRTC and returns audio directly, while Home Assistant device control is
+handled through MCP tools.
+
+1. In Home Assistant, enable **Model Context Protocol Server**.
+2. Start Pipecat Assist and open the web UI.
+3. Open **Integrations > Home Assistant MCP** and select **Test MCP**. A
+   healthy result shows the number of available tools. In a normal add-on
+   install this uses the Supervisor token automatically.
+4. Open **Integrations > Google Gemini**:
+   - Paste a Google AI Studio API key.
+   - Keep `models/gemini-3.1-flash-live-preview` as the realtime model.
+   - Keep `gemini-3.5-flash` as the text model for Home Assistant Assist text
+     tests.
+   - Use a Gemini Live voice such as `Charon` or `Puck`.
+5. Open **Pipelines**, then open **Gemini Live Home Assistant**.
+6. Set `Language` if needed, for example `en-US` or `pl-PL`.
+7. Keep the default instructions or adapt them to the household.
+8. Save the pipeline.
+
+### Browser voice test
+
+Open **Assistant**, select the Gemini Live pipeline, and choose **Start voice
+test**. Allow microphone access, wait for **Connected**, then try:
+
+- `What devices are available in the living room?`
+- `Turn on the living room lamp.`
+- `Set the living room lamp brightness to 30 percent.`
+
+If the browser cannot access the microphone, open Home Assistant over HTTPS or
+from a trusted local origin. If WebRTC connects but the assistant hears the
+wrong text, use **Runtime > Record audio in/out** and inspect the captured WAV
+files.
+
+### Home Assistant Assist text test
+
+This verifies the custom conversation entity, selected pipeline, and MCP tools.
+It is not a streaming Gemini Live audio test.
+
+1. Copy or install `custom_components/pipecat_assist` into Home Assistant.
+2. Restart Home Assistant if the integration is not already available.
+3. Add **Pipecat Assist** from **Settings > Devices & services**.
+4. Set the add-on URL to `http://127.0.0.1:7860`, or use the Home Assistant LAN
+   URL if Core cannot reach loopback.
+5. Leave the bearer token empty unless you add your own endpoint protection.
+6. In **Settings > Voice assistants**, select **Pipecat Realtime** as the
+   conversation agent.
+7. Type a Home Assistant request in Assist and check the add-on logs for MCP
+   tool calls and model errors.
+
+### Gemini troubleshooting
+
+- `Missing module: google.genai`: the add-on image is too old.
+- `model not found`: check Gemini Live access in Google AI Studio and the
+  realtime model value in **Integrations > Google Gemini**.
+- MCP or `401`: open **Integrations > Home Assistant MCP**, select
+  **Automatic defaults**, restart the add-on, then select **Test MCP**.
+- Voice `marin` does not work with Gemini: set the Gemini voice to `Charon` or
+  another Gemini Live voice.
+- Browser voice test has no microphone: use HTTPS or a trusted local origin.
 
 ## Pipecat ESP32
 

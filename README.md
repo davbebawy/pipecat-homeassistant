@@ -72,14 +72,18 @@ flowchart LR
 8. Build Pipecat ESP32 firmware with the generated
    `PIPECAT_SMALLWEBRTC_URL`.
 
-For a complete Google Gemini Live setup and Home Assistant Assist test path,
-see [Gemini Live in Home Assistant](docs/gemini-live-home-assistant.md).
-
 Home Assistant MCP access uses the add-on's Supervisor token by default. Use
 **Integrations > Home Assistant MCP > Automatic defaults** to clear custom MCP
 overrides and return to the Supervisor-backed defaults. Manually pasted
 long-lived access tokens are only needed for custom installations outside the
 Supervisor path.
+
+Gemini Live is the default first-run pipeline. Add a Google AI Studio key in
+**Integrations > Google Gemini**, keep `models/gemini-3.1-flash-live-preview`
+as the realtime model, and use **Assistant > Start voice test** to verify the
+browser voice path. The Home Assistant conversation bridge is a text-path test;
+install `custom_components/pipecat_assist`, add the **Pipecat Assist**
+integration, and select **Pipecat Realtime** as the conversation agent.
 
 ## Pipelines and Pipecat Flows
 
