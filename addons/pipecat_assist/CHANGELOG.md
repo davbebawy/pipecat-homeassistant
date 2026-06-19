@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.22
+
+- Split OpenAI configuration into OpenAI Realtime for speech-to-speech
+  pipelines and OpenAI Cloud for composed STT, LLM, and TTS pipelines.
+- Added capability-specific OpenAI defaults for transcription, text models,
+  TTS models, and voices, with migration for existing composed pipelines.
+- Fixed OpenAI composed runtime failures caused by sending text models to STT
+  and by passing `max_tokens: null` to OpenAI chat completions.
+
 ## 0.1.21
 
 - Replaced the Pipecat Flows iframe/JSON workflow with an embedded visual

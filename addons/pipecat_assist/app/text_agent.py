@@ -67,7 +67,7 @@ async def run_text_conversation(
     flow = config.selected_flow(flow_id)
     integration = config.model_integration(flow)
     provider_kind = integration.kind if integration else "openai"
-    if provider_kind not in {"openai", "gemini", "openai_compatible", "ollama"}:
+    if provider_kind not in {"openai", "openai_cloud", "gemini", "openai_compatible", "ollama"}:
         return {
             "speech": "This Pipecat Assist text bridge does not support the selected model provider yet.",
             "conversation_id": conversation_id,

@@ -27,6 +27,7 @@ DEFAULT_GEMINI_LIVE_VOICE = "Charon"
 DEFAULT_OPENAI_TEXT_MODEL = "gpt-5.4-mini"
 DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime-2"
 DEFAULT_OPENAI_REALTIME_VOICE = "marin"
+DEFAULT_OPENAI_STT_MODEL = "gpt-4o-mini-transcribe"
 DEFAULT_OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_TTS_VOICE = "marin"
 DEFAULT_CARTESIA_MODEL = "sonic-3.5"
@@ -104,6 +105,7 @@ class IntegrationConfig(BaseModel):
     name: str
     kind: Literal[
         "openai",
+        "openai_cloud",
         "gemini",
         "google_cloud_tts",
         "soniox",
@@ -130,6 +132,8 @@ class IntegrationConfig(BaseModel):
     deployment: str = ""
     default_model: str = ""
     default_realtime_model: str = ""
+    default_stt_model: str = ""
+    default_tts_model: str = ""
     default_voice: str = ""
     organization: str = ""
     project: str = ""
@@ -179,13 +183,23 @@ def default_integrations() -> list[IntegrationConfig]:
         ),
         IntegrationConfig(
             id="openai",
-            name="OpenAI",
+            name="OpenAI Realtime",
             kind="openai",
             enabled=bool(os.getenv("OPENAI_API_KEY")),
             api_key=os.getenv("OPENAI_API_KEY", ""),
-            default_model=os.getenv("TEXT_MODEL", DEFAULT_OPENAI_TEXT_MODEL),
             default_realtime_model=os.getenv("REALTIME_MODEL", DEFAULT_OPENAI_REALTIME_MODEL),
             default_voice=os.getenv("REALTIME_VOICE", DEFAULT_OPENAI_REALTIME_VOICE),
+        ),
+        IntegrationConfig(
+            id="openai-cloud",
+            name="OpenAI Cloud",
+            kind="openai_cloud",
+            enabled=bool(os.getenv("OPENAI_API_KEY")),
+            api_key=os.getenv("OPENAI_API_KEY", ""),
+            default_model=os.getenv("OPENAI_TEXT_MODEL", os.getenv("TEXT_MODEL", DEFAULT_OPENAI_TEXT_MODEL)),
+            default_stt_model=os.getenv("OPENAI_STT_MODEL", DEFAULT_OPENAI_STT_MODEL),
+            default_tts_model=os.getenv("OPENAI_TTS_MODEL", DEFAULT_OPENAI_TTS_MODEL),
+            default_voice=os.getenv("OPENAI_TTS_VOICE", DEFAULT_OPENAI_TTS_VOICE),
         ),
         IntegrationConfig(
             id="google-cloud-tts",
@@ -428,7 +442,7 @@ class FlowConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Persisted runtime configuration edited by the web UI."""
 
-    version: int = 10
+    version: int = 11
     openai_api_key: str = ""
     text_model: str = DEFAULT_GEMINI_TEXT_MODEL
     ha_mcp_url: str = ""
@@ -705,6 +719,35 @@ def _repair_flow_provider_model(config: RuntimeConfig, flow: FlowConfig) -> bool
     return changed
 
 
+def _is_composed_flow(flow: FlowConfig) -> bool:
+    has_stt = any(step.kind == "stt" and step.enabled for step in flow.steps)
+    has_tts = any(step.kind == "tts" and step.enabled for step in flow.steps)
+    return flow.mode in {"composed", "classic"} or has_stt or has_tts
+
+
+def _repair_composed_openai_integrations(config: RuntimeConfig, flow: FlowConfig) -> bool:
+    """Move composed OpenAI steps away from the speech-to-speech realtime integration."""
+
+    if not _is_composed_flow(flow):
+        return False
+    if not config.integration("openai-cloud"):
+        return False
+
+    changed = False
+    for step in flow.steps:
+        if step.kind in {"stt", "llm", "tts"} and step.integration_id == "openai":
+            step.integration_id = "openai-cloud"
+            step.model = ""
+            step.voice = ""
+            changed = True
+
+    if flow.provider_id == "openai":
+        flow.provider_id = "openai-cloud"
+        changed = True
+
+    return changed
+
+
 def _strip_unsupported_s2s_flow_steps(config: RuntimeConfig, flow: FlowConfig) -> bool:
     """Remove Pipecat Flow steps from speech-to-speech pipelines."""
 
@@ -769,8 +812,8 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
 
     openai = config.integration("openai")
     if openai:
-        if not openai.default_model:
-            openai.default_model = os.getenv("TEXT_MODEL", DEFAULT_OPENAI_TEXT_MODEL)
+        if openai.default_model:
+            openai.default_model = ""
             changed = True
         if not _is_realtime_model_for_provider("openai", openai.default_realtime_model):
             openai.default_realtime_model = os.getenv(
@@ -780,6 +823,28 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
             changed = True
         if not _is_voice_for_provider("openai", openai.default_voice):
             openai.default_voice = os.getenv("REALTIME_VOICE", DEFAULT_OPENAI_REALTIME_VOICE)
+            changed = True
+
+    openai_cloud = config.integration("openai-cloud")
+    if openai_cloud:
+        if openai and openai.api_key and not openai_cloud.api_key:
+            openai_cloud.api_key = openai.api_key
+            openai_cloud.enabled = openai.enabled
+            changed = True
+        if not openai_cloud.default_model:
+            openai_cloud.default_model = os.getenv(
+                "OPENAI_TEXT_MODEL",
+                os.getenv("TEXT_MODEL", DEFAULT_OPENAI_TEXT_MODEL),
+            )
+            changed = True
+        if not openai_cloud.default_stt_model:
+            openai_cloud.default_stt_model = os.getenv("OPENAI_STT_MODEL", DEFAULT_OPENAI_STT_MODEL)
+            changed = True
+        if not openai_cloud.default_tts_model:
+            openai_cloud.default_tts_model = os.getenv("OPENAI_TTS_MODEL", DEFAULT_OPENAI_TTS_MODEL)
+            changed = True
+        if not openai_cloud.default_voice:
+            openai_cloud.default_voice = os.getenv("OPENAI_TTS_VOICE", DEFAULT_OPENAI_TTS_VOICE)
             changed = True
 
     google_tts = config.integration("google-cloud-tts")
@@ -963,10 +1028,17 @@ class ConfigStore:
                 changed = _strip_unsupported_s2s_flow_steps(config, flow) or changed
             changed = True
 
+        if config.version < 11:
+            config.version = 11
+            for flow in config.flows:
+                changed = _repair_composed_openai_integrations(config, flow) or changed
+            changed = True
+
         for flow in config.flows:
             if not flow.language:
                 flow.language = "en"
                 changed = True
+            changed = _repair_composed_openai_integrations(config, flow) or changed
             changed = _repair_flow_provider_model(config, flow) or changed
             changed = _strip_unsupported_s2s_flow_steps(config, flow) or changed
         changed = _repair_mcp_url_overrides(config) or changed
@@ -1066,6 +1138,7 @@ class ConfigStore:
         config = RuntimeConfig.model_validate(data)
         _repair_provider_defaults(config)
         for flow in config.flows:
+            _repair_composed_openai_integrations(config, flow)
             _repair_flow_provider_model(config, flow)
         _repair_mcp_url_overrides(config)
         self.save(config)

@@ -44,6 +44,10 @@ Cloud TTS, Azure/OpenAI-compatible APIs, Ollama, local runtimes, and Home
 Assistant MCP. Home Assistant MCP shows Automatic, Manual, or Error state and
 contains the MCP test/reset controls.
 
+OpenAI is split intentionally: **OpenAI Realtime** is for native
+speech-to-speech pipelines, while **OpenAI Cloud** is for composed pipelines
+that use separate STT, LLM, and TTS steps.
+
 `Runtime`
 : Enable audio debug captures and inspect recent Home Assistant MCP calls made
 by the assistant.

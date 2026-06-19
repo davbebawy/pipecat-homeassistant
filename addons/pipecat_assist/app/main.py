@@ -55,6 +55,7 @@ from app.config import (
     DEFAULT_OPENAI_TEXT_MODEL,
     DEFAULT_OPENAI_REALTIME_MODEL,
     DEFAULT_OPENAI_REALTIME_VOICE,
+    DEFAULT_OPENAI_STT_MODEL,
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
     ConfigStore,
@@ -183,10 +184,15 @@ def _static_models_for(integration: IntegrationConfig, capability: str) -> list[
     if integration.kind == "openai":
         if capability == "realtime":
             values = [integration.default_realtime_model or DEFAULT_OPENAI_REALTIME_MODEL]
-        elif capability == "tts":
-            values = [integration.default_model or DEFAULT_OPENAI_TTS_MODEL, DEFAULT_OPENAI_TTS_MODEL]
         else:
-            values = [integration.default_model or DEFAULT_OPENAI_TEXT_MODEL]
+            values = []
+    elif integration.kind == "openai_cloud":
+        if capability == "stt":
+            values = [integration.default_stt_model or DEFAULT_OPENAI_STT_MODEL, DEFAULT_OPENAI_STT_MODEL]
+        elif capability == "tts":
+            values = [integration.default_tts_model or DEFAULT_OPENAI_TTS_MODEL, DEFAULT_OPENAI_TTS_MODEL]
+        else:
+            values = [integration.default_model or DEFAULT_OPENAI_TEXT_MODEL, DEFAULT_OPENAI_TEXT_MODEL]
     elif integration.kind == "gemini":
         values = [
             integration.default_realtime_model or DEFAULT_GEMINI_LIVE_MODEL,
@@ -231,7 +237,7 @@ async def api_integration_models(integration_id: str, capability: str = "llm"):
 
     fallback = _static_models_for(integration, capability)
     try:
-        if integration.kind == "openai" and (integration.api_key or config.openai_api_key):
+        if integration.kind in {"openai", "openai_cloud"} and (integration.api_key or config.openai_api_key):
             headers = {"Authorization": f"Bearer {integration.api_key or config.openai_api_key}"}
             async with httpx.AsyncClient(timeout=8.0) as client:
                 response = await client.get("https://api.openai.com/v1/models", headers=headers)
@@ -469,6 +475,25 @@ def _step_model(step, integration: IntegrationConfig | None, fallback: str = "")
     ).strip()
 
 
+def _step_model_for(
+    step,
+    integration: IntegrationConfig | None,
+    capability: str,
+    fallback: str = "",
+) -> str:
+    if getattr(step, "model", ""):
+        return step.model.strip()
+    if not integration:
+        return fallback.strip()
+    if capability == "stt":
+        return (integration.default_stt_model or fallback).strip()
+    if capability == "tts":
+        return (integration.default_tts_model or integration.default_model or fallback).strip()
+    if capability == "realtime":
+        return (integration.default_realtime_model or fallback).strip()
+    return (integration.default_model or fallback).strip()
+
+
 def _step_realtime_model(step, integration: IntegrationConfig | None, fallback: str = "") -> str:
     return (
         (getattr(step, "model", "") if step else "")
@@ -671,7 +696,7 @@ def _aws_nova_sonic_service(
 def _build_stt_service(config: RuntimeConfig, flow: FlowConfig):
     step, integration = _step_integration(config, flow, "stt")
     integration = _require_integration(integration, "STT", fields=())
-    model = _step_model(step, integration)
+    model = _step_model_for(step, integration, "stt")
 
     if integration.kind == "soniox":
         from pipecat.services.soniox.stt import SonioxSTTService
@@ -698,12 +723,12 @@ def _build_stt_service(config: RuntimeConfig, flow: FlowConfig):
             api_key=_integration_api_key(integration, "STT"),
             settings=GradiumSTTService.Settings(model=model or None),
         )
-    if integration.kind == "openai":
+    if integration.kind in {"openai", "openai_cloud"}:
         from pipecat.services.openai.stt import OpenAIRealtimeSTTService
 
         return OpenAIRealtimeSTTService(
             api_key=_integration_api_key(integration, "STT", config.openai_api_key),
-            model=model or "gpt-4o-mini-transcribe",
+            model=model or DEFAULT_OPENAI_STT_MODEL,
             language=flow.language or "en",
         )
 
@@ -713,23 +738,25 @@ def _build_stt_service(config: RuntimeConfig, flow: FlowConfig):
 def _build_llm_service(config: RuntimeConfig, flow: FlowConfig, tools_schema=None):
     step, integration = _step_integration(config, flow, "llm")
     integration = _require_integration(integration, "LLM", fields=())
-    model = _step_model(step, integration, flow.text_model)
+    model = _step_model_for(step, integration, "llm", flow.text_model)
 
-    if integration.kind == "openai":
+    if integration.kind in {"openai", "openai_cloud"}:
         from pipecat.services.openai.llm import OpenAILLMService
 
         api_key = integration.api_key or config.openai_api_key
         if not api_key:
             raise RuntimeError("OpenAI is missing api_key")
+        settings_kwargs: dict[str, Any] = {
+            "model": model or DEFAULT_OPENAI_TEXT_MODEL,
+            "system_instruction": flow.instructions,
+        }
+        if flow.max_output_tokens:
+            settings_kwargs["max_tokens"] = flow.max_output_tokens
         return OpenAILLMService(
             api_key=api_key,
             organization=integration.organization or None,
             project=integration.project or None,
-            settings=OpenAILLMService.Settings(
-                model=model or DEFAULT_OPENAI_TEXT_MODEL,
-                system_instruction=flow.instructions,
-                max_tokens=flow.max_output_tokens,
-            ),
+            settings=OpenAILLMService.Settings(**settings_kwargs),
         )
     if integration.kind == "gemini":
         from pipecat.services.google.llm import GoogleLLMService
@@ -749,28 +776,32 @@ def _build_llm_service(config: RuntimeConfig, flow: FlowConfig, tools_schema=Non
         from pipecat.services.aws.llm import AWSBedrockLLMService
 
         _require_integration(integration, "AWS Bedrock", fields=("access_key_id", "secret_key"))
+        settings_kwargs: dict[str, Any] = {
+            "model": model or integration.default_model,
+            "system_instruction": flow.instructions,
+        }
+        if flow.max_output_tokens:
+            settings_kwargs["max_tokens"] = flow.max_output_tokens
         return AWSBedrockLLMService(
             aws_access_key=integration.access_key_id,
             aws_secret_key=integration.secret_key,
             aws_session_token=integration.token or None,
             aws_region=integration.region or "us-east-1",
-            settings=AWSBedrockLLMService.Settings(
-                model=model or integration.default_model,
-                system_instruction=flow.instructions,
-                max_tokens=flow.max_output_tokens,
-            ),
+            settings=AWSBedrockLLMService.Settings(**settings_kwargs),
         )
     if integration.kind == "openai_compatible":
         from pipecat.services.openai.llm import OpenAILLMService
 
+        settings_kwargs: dict[str, Any] = {
+            "model": model or integration.default_model,
+            "system_instruction": flow.instructions,
+        }
+        if flow.max_output_tokens:
+            settings_kwargs["max_tokens"] = flow.max_output_tokens
         return OpenAILLMService(
             api_key=integration.api_key or "not-needed",
             base_url=integration.base_url or None,
-            settings=OpenAILLMService.Settings(
-                model=model or integration.default_model,
-                system_instruction=flow.instructions,
-                max_tokens=flow.max_output_tokens,
-            ),
+            settings=OpenAILLMService.Settings(**settings_kwargs),
         )
     if integration.kind == "ollama":
         from pipecat.services.ollama.llm import OLLamaLLMService
@@ -789,7 +820,7 @@ def _build_llm_service(config: RuntimeConfig, flow: FlowConfig, tools_schema=Non
 def _build_tts_service(config: RuntimeConfig, flow: FlowConfig):
     step, integration = _step_integration(config, flow, "tts")
     integration = _require_integration(integration, "TTS", fields=())
-    model = _step_model(step, integration)
+    model = _step_model_for(step, integration, "tts")
     voice = _step_voice(step, integration)
 
     if integration.kind == "cartesia":
@@ -837,7 +868,7 @@ def _build_tts_service(config: RuntimeConfig, flow: FlowConfig):
                 speed=flow.speed,
             ),
         )
-    if integration.kind == "openai":
+    if integration.kind in {"openai", "openai_cloud"}:
         from pipecat.services.openai.tts import OpenAITTSService
 
         return OpenAITTSService(

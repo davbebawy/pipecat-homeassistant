@@ -67,6 +67,7 @@ const GEMINI_LIVE_VOICE = "Charon";
 const OPENAI_TEXT_MODEL = "gpt-5.4-mini";
 const OPENAI_REALTIME_MODEL = "gpt-realtime-2";
 const OPENAI_REALTIME_VOICE = "marin";
+const OPENAI_STT_MODEL = "gpt-4o-mini-transcribe";
 const OPENAI_TTS_MODEL = "gpt-4o-mini-tts";
 const OPENAI_TTS_VOICE = "marin";
 const CARTESIA_MODEL = "sonic-3.5";
@@ -94,7 +95,8 @@ const OPENAI_REALTIME_VOICES = [
 ];
 
 const providerKinds = [
-  ["openai", "OpenAI", Cloud],
+  ["openai", "OpenAI Realtime", Radio],
+  ["openai_cloud", "OpenAI Cloud", Cloud],
   ["gemini", "Gemini", Cloud],
   ["google_cloud_tts", "Google Cloud TTS", Cloud],
   ["soniox", "Soniox", Cloud],
@@ -113,7 +115,7 @@ const providerKinds = [
   ["home_assistant_mcp", "Home Assistant MCP", Home],
 ];
 
-const protectedIntegrationIds = ["gemini", "openai", "ha-mcp"];
+const protectedIntegrationIds = ["gemini", "openai", "openai-cloud", "ha-mcp"];
 
 const stepTypes = [
   ["transport", "Transport", Radio, "neutral"],
@@ -129,9 +131,9 @@ const stepTypes = [
 const addableStepTypes = stepTypes.filter(([kind]) => !["transport", "output"].includes(kind));
 
 const stepProviders = {
-  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai"],
-  llm: ["openai", "gemini", "aws_bedrock", "openai_compatible", "ollama"],
-  tts: ["cartesia", "gradium", "google_cloud_tts", "elevenlabs", "openai", "soniox"],
+  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud"],
+  llm: ["openai_cloud", "gemini", "aws_bedrock", "openai_compatible", "ollama"],
+  tts: ["cartesia", "gradium", "google_cloud_tts", "elevenlabs", "openai_cloud", "soniox"],
   tools: ["home_assistant_mcp"],
   output: ["gemini", "openai", "aws_nova_sonic"],
 };
@@ -191,12 +193,12 @@ const templates = [
     icon: Workflow,
     group: "Composed realtime",
     mode: "composed",
-    provider: "openai",
+    provider: "openai-cloud",
     accent: "mint",
     steps: [
       ["transport", "transport", "SmallWebRTC", ""],
       ["stt", "stt", "Soniox STT", "soniox"],
-      ["llm", "llm", "OpenAI LLM", "openai"],
+      ["llm", "llm", "OpenAI LLM", "openai-cloud"],
       ["tools", "tools", "HA MCP tools", "ha-mcp"],
       ["flow", "flow", "Pipecat Flow", ""],
       ["tts", "tts", "Cartesia TTS", "cartesia"],
@@ -214,7 +216,7 @@ const templates = [
     steps: [
       ["transport", "transport", "SmallWebRTC", ""],
       ["stt", "stt", "Soniox STT", "soniox"],
-      ["llm", "llm", "OpenAI LLM", "openai"],
+      ["llm", "llm", "OpenAI LLM", "openai-cloud"],
       ["tools", "tools", "HA MCP tools", "ha-mcp"],
       ["flow", "flow", "Pipecat Flow", ""],
       ["tts", "tts", "Gradium TTS", "gradium"],
@@ -876,8 +878,16 @@ function providerDefaults(provider) {
   if (provider === "openai") {
     return {
       model: OPENAI_REALTIME_MODEL,
-      text_model: OPENAI_TEXT_MODEL,
       voice: OPENAI_REALTIME_VOICE,
+    };
+  }
+  if (provider === "openai_cloud" || provider === "openai-cloud") {
+    return {
+      model: OPENAI_TEXT_MODEL,
+      text_model: OPENAI_TEXT_MODEL,
+      stt_model: OPENAI_STT_MODEL,
+      tts_model: OPENAI_TTS_MODEL,
+      voice: OPENAI_TTS_VOICE,
     };
   }
   if (provider === "aws-nova-sonic" || provider === "aws_nova_sonic") {
@@ -906,6 +916,8 @@ function integrationDefaults(config, integrationId) {
   return {
     model: integration?.default_realtime_model || integration?.default_model || fallback.model || "",
     text_model: integration?.default_model || fallback.text_model || "",
+    stt_model: integration?.default_stt_model || fallback.stt_model || "",
+    tts_model: integration?.default_tts_model || fallback.tts_model || "",
     voice: integration?.default_voice || fallback.voice || "",
     kind: integration?.kind || integrationId || "",
   };
@@ -938,6 +950,20 @@ function stepDefaults(config, integrationId, kind, mode) {
   const integration = config?.integrations?.find((item) => item.id === integrationId || item.kind === integrationId);
   const fallback = providerDefaults(integrationId);
   if (!integration) return fallback;
+  if (kind === "stt") {
+    return {
+      model: integration.default_stt_model || fallback.stt_model || integration.default_model || fallback.model || "",
+      text_model: integration.default_model || fallback.text_model || "",
+      voice: integration.default_voice || fallback.voice || "",
+    };
+  }
+  if (kind === "tts") {
+    return {
+      model: integration.default_tts_model || fallback.tts_model || integration.default_model || fallback.model || "",
+      text_model: integration.default_model || fallback.text_model || "",
+      voice: integration.default_voice || fallback.voice || "",
+    };
+  }
   if (kind === "llm" && mode === "realtime") {
     return {
       model: integration.default_realtime_model || fallback.model || integration.default_model || "",
@@ -1114,6 +1140,7 @@ function integrationSummary(integration, config = null) {
     [
       "gemini",
       "openai",
+      "openai_cloud",
       "anthropic",
       "azure_openai",
       "soniox",
@@ -1469,6 +1496,8 @@ function App() {
       deployment: "",
       default_model: providerDefaults(kind).text_model || "",
       default_realtime_model: providerDefaults(kind).model || "",
+      default_stt_model: providerDefaults(kind).stt_model || "",
+      default_tts_model: providerDefaults(kind).tts_model || "",
       default_voice: providerDefaults(kind).voice || "",
       organization: "",
       project: "",
@@ -1856,7 +1885,7 @@ function validatePipeline(config, flow) {
       errors.push(`${integration.name} cannot be used as ${step.kind.toUpperCase()}.`);
     }
     if (
-      ["gemini", "openai", "soniox", "deepgram", "cartesia", "gradium", "speechmatics", "elevenlabs"].includes(
+      ["gemini", "openai", "openai_cloud", "soniox", "deepgram", "cartesia", "gradium", "speechmatics", "elevenlabs"].includes(
         integration.kind,
       ) &&
       secretStatus(integration, "api_key") === "missing"
@@ -3502,7 +3531,7 @@ function IntegrationSettings({ integration, config, updateIntegration, modelOpti
         <SettingsSection title="Credentials" status={secretStatus(integration, "api_key")}>
           <SecretSetting integration={integration} field="api_key" label="OpenAI API key" updateIntegration={updateIntegration} />
         </SettingsSection>
-        <SettingsSection title="Models">
+        <SettingsSection title="Realtime">
           <ModelSetting
             integration={integration}
             field="default_realtime_model"
@@ -3512,6 +3541,32 @@ function IntegrationSettings({ integration, config, updateIntegration, modelOpti
             loadModelOptions={loadModelOptions}
             capability="realtime"
           />
+          <TextSetting integration={integration} field="default_voice" label="Voice" updateIntegration={updateIntegration} />
+        </SettingsSection>
+      </>
+    );
+  }
+
+  if (integration.kind === "openai_cloud") {
+    return (
+      <>
+        <SettingsSection title="Credentials" status={secretStatus(integration, "api_key")}>
+          <SecretSetting integration={integration} field="api_key" label="OpenAI API key" updateIntegration={updateIntegration} />
+          <TextSetting integration={integration} field="organization" label="Organization" updateIntegration={updateIntegration} />
+          <TextSetting integration={integration} field="project" label="Project" updateIntegration={updateIntegration} />
+        </SettingsSection>
+        <SettingsSection title="Speech to text">
+          <ModelSetting
+            integration={integration}
+            field="default_stt_model"
+            label="Transcription model"
+            updateIntegration={updateIntegration}
+            modelOptions={modelOptions}
+            loadModelOptions={loadModelOptions}
+            capability="stt"
+          />
+        </SettingsSection>
+        <SettingsSection title="Language model">
           <ModelSetting
             integration={integration}
             field="default_model"
@@ -3520,6 +3575,17 @@ function IntegrationSettings({ integration, config, updateIntegration, modelOpti
             modelOptions={modelOptions}
             loadModelOptions={loadModelOptions}
             capability="llm"
+          />
+        </SettingsSection>
+        <SettingsSection title="Text to speech">
+          <ModelSetting
+            integration={integration}
+            field="default_tts_model"
+            label="TTS model"
+            updateIntegration={updateIntegration}
+            modelOptions={modelOptions}
+            loadModelOptions={loadModelOptions}
+            capability="tts"
           />
           <TextSetting integration={integration} field="default_voice" label="Voice" updateIntegration={updateIntegration} />
         </SettingsSection>
@@ -3853,16 +3919,16 @@ function voiceReadiness(config, flow) {
     return { ok: false, detail: `${integration.name} is disabled.` };
   }
 
-  const keyStatus = ["gemini", "openai"].includes(integration.kind)
+  const keyStatus = ["gemini", "openai", "openai_cloud"].includes(integration.kind)
     ? secretStatus(integration, "api_key")
     : "configured";
-  if (flow.mode === "realtime" && keyStatus === "missing") {
+  if (keyStatus === "missing") {
     return {
       ok: false,
       detail: `${integration.name} API key is missing. Add it in Integrations, save, then retry.`,
     };
   }
-  if (flow.mode === "realtime" && keyStatus === "pending") {
+  if (keyStatus === "pending") {
     return {
       ok: false,
       detail: `Save configuration before starting the voice test; the add-on cannot use the new ${integration.name} key yet.`,
