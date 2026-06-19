@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.20
+
+- Fixed browser voice tests hanging on "Connecting audio" after the add-on
+  started applying Pipecat's ESP32 SDP munging globally.
+- Added WebRTC ICE connection state handling and a visible connection timeout
+  so failed audio setup is reported in the Assistant panel instead of spinning
+  indefinitely.
+
 ## 0.1.19
 
 - Separated active pipeline selection from opening a pipeline for editing, with

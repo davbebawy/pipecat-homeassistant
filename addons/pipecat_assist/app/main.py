@@ -149,7 +149,6 @@ async def api_status(request: Request):
         "runner": {
             "host": config.runner_host,
             "port": config.runner_port,
-            "esp32_mode": config.esp32_mode,
             "offer_url": _offer_url(config, request),
             "offer_path": _offer_path(config),
         },

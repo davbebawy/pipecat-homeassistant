@@ -9,6 +9,6 @@ export RUNNER_HOST
 export RUNNER_PORT
 export LOG_LEVEL
 
-ARGS=(--host "$RUNNER_HOST" --port "$RUNNER_PORT" -t webrtc --esp32)
+ARGS=(--host "$RUNNER_HOST" --port "$RUNNER_PORT" -t webrtc)
 
 exec python3 -m app.main "${ARGS[@]}"

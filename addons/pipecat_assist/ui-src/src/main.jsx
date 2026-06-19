@@ -3102,11 +3102,11 @@ function VoiceTest({ config, flow }) {
   const audioRef = useRef(null);
   const channelRef = useRef(null);
   const closingRef = useRef(false);
+  const connectTimeoutRef = useRef(null);
   const pingRef = useRef(null);
   const peerRef = useRef(null);
   const readySentRef = useRef(false);
   const streamRef = useRef(null);
-  const trackReadyRef = useRef(false);
   const [state, setState] = useState("idle");
   const [detail, setDetail] = useState("Ready");
   const readiness = voiceReadiness(config, flow);
@@ -3126,6 +3126,10 @@ function VoiceTest({ config, flow }) {
       clearInterval(pingRef.current);
       pingRef.current = null;
     }
+    if (connectTimeoutRef.current) {
+      clearTimeout(connectTimeoutRef.current);
+      connectTimeoutRef.current = null;
+    }
     if (channelRef.current?.readyState === "open") {
       channelRef.current.send(
         JSON.stringify({
@@ -3143,7 +3147,6 @@ function VoiceTest({ config, flow }) {
     peerRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
-    trackReadyRef.current = false;
     if (audioRef.current) audioRef.current.srcObject = null;
   }
 
@@ -3199,7 +3202,7 @@ function VoiceTest({ config, flow }) {
       const channel = peerConnection.createDataChannel("signalling");
       channelRef.current = channel;
       const sendClientReady = () => {
-        if (!trackReadyRef.current || readySentRef.current || channel.readyState !== "open") return;
+        if (readySentRef.current || channel.readyState !== "open") return;
         channel.send(
           JSON.stringify({
             label: "rtvi-ai",
@@ -3209,7 +3212,7 @@ function VoiceTest({ config, flow }) {
               version: "1.4.0",
               about: {
                 library: "pipecat-assist-ui",
-                library_version: "0.1.19",
+                library_version: "0.1.20",
                 platform: "browser",
               },
             },
@@ -3229,23 +3232,42 @@ function VoiceTest({ config, flow }) {
         if (!audioRef.current) return;
         audioRef.current.srcObject = event.streams[0] || new MediaStream([event.track]);
         audioRef.current.play().catch(() => {});
-        trackReadyRef.current = true;
-        sendClientReady();
+      };
+
+      const markConnected = () => {
+        if (connectTimeoutRef.current) {
+          clearTimeout(connectTimeoutRef.current);
+          connectTimeoutRef.current = null;
+        }
+        setState("connected");
+        setDetail("Connected. Speak to the selected assistant.");
+      };
+
+      const failWebRtc = (message) => {
+        if (closingRef.current || peerRef.current !== peerConnection) return;
+        clearSession("error", message);
       };
 
       peerConnection.onconnectionstatechange = () => {
         const next = peerConnection.connectionState;
         if (next === "connected") {
-          setState("connected");
-          setDetail("Connected. Speak to the selected assistant.");
+          markConnected();
         }
         if (["failed", "disconnected", "closed"].includes(next) && !closingRef.current) {
-          clearSession(
-            next === "failed" ? "error" : "idle",
+          failWebRtc(
             next === "failed"
               ? "WebRTC failed after the offer was accepted. Check the add-on logs for provider or model errors."
               : `WebRTC ${next}`,
           );
+        }
+      };
+      peerConnection.oniceconnectionstatechange = () => {
+        const next = peerConnection.iceConnectionState;
+        if (["connected", "completed"].includes(next)) {
+          markConnected();
+        }
+        if (["failed", "disconnected", "closed"].includes(next)) {
+          failWebRtc(`WebRTC ICE ${next}. Check that the browser can reach the add-on network endpoint.`);
         }
       };
 
@@ -3278,6 +3300,16 @@ function VoiceTest({ config, flow }) {
         type: answer.type,
       });
       setDetail("Connecting audio");
+      if (
+        peerConnection.connectionState === "connected" ||
+        ["connected", "completed"].includes(peerConnection.iceConnectionState)
+      ) {
+        markConnected();
+      } else {
+        connectTimeoutRef.current = window.setTimeout(() => {
+          failWebRtc("WebRTC audio did not connect after the offer was accepted. Restart the add-on after updating and check the add-on logs for ICE errors.");
+        }, 15000);
+      }
     } catch (err) {
       clearSession("error", friendlyWebRtcError(err));
     }

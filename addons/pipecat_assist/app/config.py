@@ -436,7 +436,7 @@ class RuntimeConfig(BaseModel):
     satellite_shared_secret: str = ""
     runner_host: str = ""
     runner_port: int = Field(default=7860, ge=1024, le=65535)
-    esp32_mode: bool = True
+    esp32_mode: bool = False
     enable_default_ice_servers: bool = False
     audio_debug_enabled: bool = False
     audio_debug_keep_sessions: int = Field(default=10, ge=1, le=100)
@@ -580,7 +580,7 @@ def default_config_from_environment() -> RuntimeConfig:
         satellite_shared_secret=os.getenv("SATELLITE_SHARED_SECRET", ""),
         runner_host=os.getenv("RUNNER_HOST", ""),
         runner_port=_env_int("RUNNER_PORT", 7860),
-        esp32_mode=_env_bool("ESP32_MODE", True),
+        esp32_mode=_env_bool("ESP32_MODE", False),
         audio_debug_enabled=_env_bool("AUDIO_DEBUG_ENABLED", False),
         audio_debug_keep_sessions=min(100, max(1, _env_int("AUDIO_DEBUG_KEEP_SESSIONS", 10))),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
