@@ -194,10 +194,13 @@ def _static_models_for(integration: IntegrationConfig, capability: str) -> list[
         else:
             values = [integration.default_model or DEFAULT_OPENAI_TEXT_MODEL, DEFAULT_OPENAI_TEXT_MODEL]
     elif integration.kind == "gemini":
-        values = [
-            integration.default_realtime_model or DEFAULT_GEMINI_LIVE_MODEL,
-            integration.default_model or DEFAULT_GEMINI_TEXT_MODEL,
-        ]
+        if capability == "realtime":
+            values = [integration.default_realtime_model or DEFAULT_GEMINI_LIVE_MODEL]
+        else:
+            values = []
+    elif integration.kind == "gemini_cloud":
+        if capability != "realtime":
+            values = [integration.default_model or DEFAULT_GEMINI_TEXT_MODEL]
     elif integration.kind == "cartesia":
         values = [integration.default_model or DEFAULT_CARTESIA_MODEL]
     elif integration.kind == "elevenlabs":
@@ -250,7 +253,7 @@ async def api_integration_models(integration_id: str, capability: str = "llm"):
             if models:
                 return {"ok": True, "models": [{"id": item, "label": item} for item in models]}
 
-        if integration.kind == "gemini" and integration.api_key:
+        if integration.kind in {"gemini", "gemini_cloud"} and integration.api_key:
             async with httpx.AsyncClient(timeout=8.0) as client:
                 response = await client.get(
                     "https://generativelanguage.googleapis.com/v1beta/models",
@@ -261,9 +264,13 @@ async def api_integration_models(integration_id: str, capability: str = "llm"):
             for item in response.json().get("models", []):
                 name = str(item.get("name", ""))
                 methods = item.get("supportedGenerationMethods", [])
-                if capability == "realtime" and "live" not in name.lower():
+                if integration.kind == "gemini" and capability == "realtime" and "live" not in name.lower():
                     continue
-                if capability != "realtime" and "generateContent" not in methods:
+                if integration.kind == "gemini_cloud" and capability == "realtime":
+                    continue
+                if integration.kind == "gemini_cloud" and "generateContent" not in methods:
+                    continue
+                if integration.kind == "gemini" and capability != "realtime":
                     continue
                 models.append(name)
             if models:
@@ -758,7 +765,7 @@ def _build_llm_service(config: RuntimeConfig, flow: FlowConfig, tools_schema=Non
             project=integration.project or None,
             settings=OpenAILLMService.Settings(**settings_kwargs),
         )
-    if integration.kind == "gemini":
+    if integration.kind in {"gemini", "gemini_cloud"}:
         from pipecat.services.google.llm import GoogleLLMService
 
         api_key = integration.api_key or os.getenv("GOOGLE_API_KEY", "")

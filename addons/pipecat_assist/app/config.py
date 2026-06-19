@@ -107,6 +107,7 @@ class IntegrationConfig(BaseModel):
         "openai",
         "openai_cloud",
         "gemini",
+        "gemini_cloud",
         "google_cloud_tts",
         "soniox",
         "deepgram",
@@ -173,13 +174,20 @@ def default_integrations() -> list[IntegrationConfig]:
     return [
         IntegrationConfig(
             id="gemini",
-            name="Google Gemini",
+            name="Google Gemini Live",
             kind="gemini",
             enabled=bool(os.getenv("GOOGLE_API_KEY")),
             api_key=os.getenv("GOOGLE_API_KEY", ""),
-            default_model=os.getenv("GEMINI_TEXT_MODEL", DEFAULT_GEMINI_TEXT_MODEL),
             default_realtime_model=os.getenv("GEMINI_LIVE_MODEL", DEFAULT_GEMINI_LIVE_MODEL),
             default_voice=os.getenv("GEMINI_LIVE_VOICE", DEFAULT_GEMINI_LIVE_VOICE),
+        ),
+        IntegrationConfig(
+            id="gemini-cloud",
+            name="Google Gemini Cloud",
+            kind="gemini_cloud",
+            enabled=bool(os.getenv("GOOGLE_API_KEY")),
+            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            default_model=os.getenv("GEMINI_TEXT_MODEL", DEFAULT_GEMINI_TEXT_MODEL),
         ),
         IntegrationConfig(
             id="openai",
@@ -442,7 +450,7 @@ class FlowConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Persisted runtime configuration edited by the web UI."""
 
-    version: int = 11
+    version: int = 12
     openai_api_key: str = ""
     text_model: str = DEFAULT_GEMINI_TEXT_MODEL
     ha_mcp_url: str = ""
@@ -748,6 +756,37 @@ def _repair_composed_openai_integrations(config: RuntimeConfig, flow: FlowConfig
     return changed
 
 
+def _repair_composed_gemini_integrations(config: RuntimeConfig, flow: FlowConfig) -> bool:
+    """Move composed Gemini steps away from the speech-to-speech live integration."""
+
+    if not _is_composed_flow(flow):
+        return False
+
+    changed = False
+    has_gemini_cloud = bool(config.integration("gemini-cloud"))
+
+    for step in flow.steps:
+        if step.integration_id != "gemini":
+            continue
+        if step.kind == "llm" and has_gemini_cloud:
+            step.integration_id = "gemini-cloud"
+        elif step.kind == "stt":
+            step.integration_id = "deepgram" if config.integration("deepgram") else ""
+        elif step.kind == "tts":
+            step.integration_id = "google-cloud-tts" if config.integration("google-cloud-tts") else ""
+        else:
+            continue
+        step.model = ""
+        step.voice = ""
+        changed = True
+
+    if flow.provider_id == "gemini" and has_gemini_cloud:
+        flow.provider_id = "gemini-cloud"
+        changed = True
+
+    return changed
+
+
 def _strip_unsupported_s2s_flow_steps(config: RuntimeConfig, flow: FlowConfig) -> bool:
     """Remove Pipecat Flow steps from speech-to-speech pipelines."""
 
@@ -797,8 +836,11 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
 
     gemini = config.integration("gemini")
     if gemini:
-        if not gemini.default_model:
-            gemini.default_model = os.getenv("GEMINI_TEXT_MODEL", DEFAULT_GEMINI_TEXT_MODEL)
+        if gemini.name in {"Google Gemini", "Gemini"}:
+            gemini.name = "Google Gemini Live"
+            changed = True
+        if gemini.default_model:
+            gemini.default_model = ""
             changed = True
         if gemini.default_realtime_model in {"", "gemini-2.5-flash-live"}:
             gemini.default_realtime_model = os.getenv(
@@ -808,6 +850,25 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
             changed = True
         if not _is_voice_for_provider("gemini", gemini.default_voice):
             gemini.default_voice = os.getenv("GEMINI_LIVE_VOICE", DEFAULT_GEMINI_LIVE_VOICE)
+            changed = True
+
+    gemini_cloud = config.integration("gemini-cloud")
+    if gemini_cloud:
+        if gemini_cloud.name != "Google Gemini Cloud":
+            gemini_cloud.name = "Google Gemini Cloud"
+            changed = True
+        if gemini and gemini.api_key and not gemini_cloud.api_key:
+            gemini_cloud.api_key = gemini.api_key
+            gemini_cloud.enabled = gemini.enabled
+            changed = True
+        if not gemini_cloud.default_model:
+            gemini_cloud.default_model = os.getenv("GEMINI_TEXT_MODEL", DEFAULT_GEMINI_TEXT_MODEL)
+            changed = True
+        if gemini_cloud.default_realtime_model:
+            gemini_cloud.default_realtime_model = ""
+            changed = True
+        if gemini_cloud.default_voice:
+            gemini_cloud.default_voice = ""
             changed = True
 
     openai = config.integration("openai")
@@ -1040,11 +1101,18 @@ class ConfigStore:
                 changed = _repair_composed_openai_integrations(config, flow) or changed
             changed = True
 
+        if config.version < 12:
+            config.version = 12
+            for flow in config.flows:
+                changed = _repair_composed_gemini_integrations(config, flow) or changed
+            changed = True
+
         for flow in config.flows:
             if not flow.language:
                 flow.language = "en"
                 changed = True
             changed = _repair_composed_openai_integrations(config, flow) or changed
+            changed = _repair_composed_gemini_integrations(config, flow) or changed
             changed = _repair_flow_provider_model(config, flow) or changed
             changed = _strip_unsupported_s2s_flow_steps(config, flow) or changed
         changed = _repair_mcp_url_overrides(config) or changed
@@ -1145,6 +1213,7 @@ class ConfigStore:
         _repair_provider_defaults(config)
         for flow in config.flows:
             _repair_composed_openai_integrations(config, flow)
+            _repair_composed_gemini_integrations(config, flow)
             _repair_flow_provider_model(config, flow)
         _repair_mcp_url_overrides(config)
         self.save(config)

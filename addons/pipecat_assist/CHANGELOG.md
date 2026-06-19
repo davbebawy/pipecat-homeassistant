@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.24
+
+- Split Gemini configuration into Google Gemini Live for speech-to-speech
+  pipelines and Google Gemini Cloud for composed LLM and Pipecat Flow
+  pipelines.
+- Migrated existing composed Gemini LLM steps to Google Gemini Cloud and
+  replaced invalid Gemini STT/TTS steps with supported cloud defaults.
+- Fixed composed pipeline presets so they no longer assign Gemini Live to STT
+  or TTS steps.
+
 ## 0.1.23
 
 - Fixed pipeline validation and integration dropdowns so OpenAI Realtime is

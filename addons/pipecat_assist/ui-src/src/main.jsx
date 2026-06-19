@@ -97,7 +97,8 @@ const OPENAI_REALTIME_VOICES = [
 const providerKinds = [
   ["openai", "OpenAI Realtime", Radio],
   ["openai_cloud", "OpenAI Cloud", Cloud],
-  ["gemini", "Gemini", Cloud],
+  ["gemini", "Google Gemini Live", Radio],
+  ["gemini_cloud", "Google Gemini Cloud", Cloud],
   ["google_cloud_tts", "Google Cloud TTS", Cloud],
   ["soniox", "Soniox", Cloud],
   ["deepgram", "Deepgram", Cloud],
@@ -115,7 +116,7 @@ const providerKinds = [
   ["home_assistant_mcp", "Home Assistant MCP", Home],
 ];
 
-const protectedIntegrationIds = ["gemini", "openai", "openai-cloud", "ha-mcp"];
+const protectedIntegrationIds = ["gemini", "gemini-cloud", "openai", "openai-cloud", "ha-mcp"];
 
 const stepTypes = [
   ["transport", "Transport", Radio, "neutral"],
@@ -132,7 +133,7 @@ const addableStepTypes = stepTypes.filter(([kind]) => !["transport", "output"].i
 
 const stepProviders = {
   stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud"],
-  llm: ["openai_cloud", "gemini", "aws_bedrock", "openai_compatible", "ollama"],
+  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "openai_compatible", "ollama"],
   tts: ["cartesia", "gradium", "google_cloud_tts", "elevenlabs", "openai_cloud", "soniox"],
   tools: ["home_assistant_mcp"],
   output: ["gemini", "openai", "aws_nova_sonic"],
@@ -240,12 +241,12 @@ const templates = [
     icon: Workflow,
     group: "Composed realtime",
     mode: "composed",
-    provider: "gemini",
+    provider: "gemini-cloud",
     accent: "blue",
     steps: [
       ["transport", "transport", "SmallWebRTC", ""],
       ["stt", "stt", "Deepgram STT", "deepgram"],
-      ["llm", "llm", "Gemini LLM", "gemini"],
+      ["llm", "llm", "Gemini Cloud LLM", "gemini-cloud"],
       ["tools", "tools", "HA MCP tools", "ha-mcp"],
       ["flow", "flow", "Pipecat Flow", ""],
       ["tts", "tts", "Google TTS Chirp 3", "google-cloud-tts"],
@@ -258,12 +259,12 @@ const templates = [
     icon: Workflow,
     group: "Composed realtime",
     mode: "composed",
-    provider: "gemini",
+    provider: "gemini-cloud",
     accent: "blue",
     steps: [
       ["transport", "transport", "SmallWebRTC", ""],
       ["stt", "stt", "Deepgram STT", "deepgram"],
-      ["llm", "llm", "Google LLM", "gemini"],
+      ["llm", "llm", "Gemini Cloud LLM", "gemini-cloud"],
       ["tools", "tools", "HA MCP tools", "ha-mcp"],
       ["flow", "flow", "Pipecat Flow", ""],
       ["tts", "tts", "Google TTS Chirp 3", "google-cloud-tts"],
@@ -294,15 +295,15 @@ const templates = [
     icon: Cloud,
     group: "Custom",
     mode: "composed",
-    provider: "gemini",
+    provider: "gemini-cloud",
     accent: "blue",
     steps: [
       ["transport", "transport", "SmallWebRTC", ""],
-      ["stt", "stt", "Cloud STT", "gemini"],
-      ["llm", "llm", "Cloud LLM", "gemini"],
+      ["stt", "stt", "Cloud STT", "deepgram"],
+      ["llm", "llm", "Cloud LLM", "gemini-cloud"],
       ["tools", "tools", "HA MCP tools", "ha-mcp"],
       ["flow", "flow", "Pipecat Flow", ""],
-      ["tts", "tts", "Cloud TTS", "gemini"],
+      ["tts", "tts", "Cloud TTS", "google-cloud-tts"],
       ["output", "output", "Audio output", ""],
     ],
   },
@@ -882,8 +883,14 @@ function providerDefaults(provider) {
   if (provider === "gemini") {
     return {
       model: GEMINI_LIVE_MODEL,
-      text_model: GEMINI_TEXT_MODEL,
       voice: GEMINI_LIVE_VOICE,
+    };
+  }
+  if (provider === "gemini_cloud" || provider === "gemini-cloud") {
+    return {
+      model: GEMINI_TEXT_MODEL,
+      text_model: GEMINI_TEXT_MODEL,
+      voice: "",
     };
   }
   if (provider === "openai") {
@@ -1150,6 +1157,7 @@ function integrationSummary(integration, config = null) {
   if (
     [
       "gemini",
+      "gemini_cloud",
       "openai",
       "openai_cloud",
       "anthropic",
@@ -1896,7 +1904,7 @@ function validatePipeline(config, flow) {
       errors.push(`${integration.name} cannot be used as ${step.kind.toUpperCase()}.`);
     }
     if (
-      ["gemini", "openai", "openai_cloud", "soniox", "deepgram", "cartesia", "gradium", "speechmatics", "elevenlabs"].includes(
+      ["gemini", "gemini_cloud", "openai", "openai_cloud", "soniox", "deepgram", "cartesia", "gradium", "speechmatics", "elevenlabs"].includes(
         integration.kind,
       ) &&
       secretStatus(integration, "api_key") === "missing"
@@ -3508,7 +3516,7 @@ function IntegrationSettings({ integration, config, updateIntegration, modelOpti
         <SettingsSection title="Credentials" status={secretStatus(integration, "api_key")}>
           <SecretSetting integration={integration} field="api_key" label="Gemini API key" updateIntegration={updateIntegration} />
         </SettingsSection>
-        <SettingsSection title="Models">
+        <SettingsSection title="Realtime">
           <ModelSetting
             integration={integration}
             field="default_realtime_model"
@@ -3518,6 +3526,19 @@ function IntegrationSettings({ integration, config, updateIntegration, modelOpti
             loadModelOptions={loadModelOptions}
             capability="realtime"
           />
+          <TextSetting integration={integration} field="default_voice" label="Voice" updateIntegration={updateIntegration} />
+        </SettingsSection>
+      </>
+    );
+  }
+
+  if (integration.kind === "gemini_cloud") {
+    return (
+      <>
+        <SettingsSection title="Credentials" status={secretStatus(integration, "api_key")}>
+          <SecretSetting integration={integration} field="api_key" label="Gemini API key" updateIntegration={updateIntegration} />
+        </SettingsSection>
+        <SettingsSection title="Language model">
           <ModelSetting
             integration={integration}
             field="default_model"
@@ -3527,7 +3548,6 @@ function IntegrationSettings({ integration, config, updateIntegration, modelOpti
             loadModelOptions={loadModelOptions}
             capability="llm"
           />
-          <TextSetting integration={integration} field="default_voice" label="Voice" updateIntegration={updateIntegration} />
         </SettingsSection>
       </>
     );
@@ -3927,7 +3947,7 @@ function voiceReadiness(config, flow) {
     return { ok: false, detail: `${integration.name} is disabled.` };
   }
 
-  const keyStatus = ["gemini", "openai", "openai_cloud"].includes(integration.kind)
+  const keyStatus = ["gemini", "gemini_cloud", "openai", "openai_cloud"].includes(integration.kind)
     ? secretStatus(integration, "api_key")
     : "configured";
   if (keyStatus === "missing") {
@@ -4111,7 +4131,7 @@ function VoiceTest({ config, flow }) {
               version: "1.4.0",
               about: {
                 library: "pipecat-assist-ui",
-                library_version: "0.1.23",
+                library_version: "0.1.24",
                 platform: "browser",
               },
             },
