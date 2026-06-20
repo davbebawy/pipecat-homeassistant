@@ -5,13 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_URL, Platform
 from homeassistant.core import HomeAssistant
 
+from .const import VERSION
 from .views import register_proxy_views
 
 PLATFORMS = [Platform.CONVERSATION, Platform.STT, Platform.TTS]
-CARD_MODULE_URL = "/pipecat_assist/pipecat-assist-card.js"
+CARD_RESOURCE_PATH = "/pipecat_assist/pipecat-assist-card.js"
+CARD_MODULE_URL = f"{CARD_RESOURCE_PATH}?v={VERSION}"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -20,6 +22,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_static_path(hass)
     register_proxy_views(hass)
     _async_register_frontend_module(hass)
+    await _async_register_lovelace_resource(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -47,6 +50,45 @@ def _async_unregister_frontend_module(hass: HomeAssistant) -> None:
     from homeassistant.components import frontend
 
     frontend.remove_extra_js_url(hass, CARD_MODULE_URL)
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
+    """Make the Lovelace card visible in the dashboard card picker."""
+
+    try:
+        from homeassistant.components.lovelace.const import (
+            CONF_RESOURCE_TYPE_WS,
+            LOVELACE_DATA,
+            MODE_STORAGE,
+        )
+    except ImportError:
+        return
+
+    lovelace_data = hass.data.get(LOVELACE_DATA)
+    if not lovelace_data or lovelace_data.resource_mode != MODE_STORAGE:
+        return
+
+    resources = lovelace_data.resources
+    if hasattr(resources, "async_get_info"):
+        await resources.async_get_info()
+    elif not getattr(resources, "loaded", True):
+        await resources.async_load()
+        resources.loaded = True
+
+    for item in resources.async_items() or []:
+        url = str(item.get(CONF_URL, ""))
+        if url.split("?")[0] != CARD_RESOURCE_PATH:
+            continue
+        if url != CARD_MODULE_URL and hasattr(resources, "async_update_item"):
+            await resources.async_update_item(
+                item["id"],
+                {CONF_RESOURCE_TYPE_WS: "module", CONF_URL: CARD_MODULE_URL},
+            )
+        return
+
+    await resources.async_create_item(
+        {CONF_RESOURCE_TYPE_WS: "module", CONF_URL: CARD_MODULE_URL}
+    )
 
 
 async def _async_register_static_path(hass: HomeAssistant) -> None:

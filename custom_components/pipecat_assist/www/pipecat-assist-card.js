@@ -1,7 +1,11 @@
 class PipecatAssistCard extends HTMLElement {
+  static getStubConfig() {
+    return { name: "Pipecat Assist" };
+  }
+
   setConfig(config) {
     this.config = config || {};
-    this.attachShadow({ mode: "open" });
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this.state = "idle";
     this.detail = "Ready";
     this.render();
@@ -284,11 +288,16 @@ class PipecatAssistCard extends HTMLElement {
   }
 }
 
-customElements.define("pipecat-assist-card", PipecatAssistCard);
+if (!customElements.get("pipecat-assist-card")) {
+  customElements.define("pipecat-assist-card", PipecatAssistCard);
+}
 
-window.customCards = window.customCards || [];
+window.customCards = Array.isArray(window.customCards) ? window.customCards : [];
+const existingCardIndex = window.customCards.findIndex((card) => card.type === "pipecat-assist-card");
+if (existingCardIndex >= 0) window.customCards.splice(existingCardIndex, 1);
 window.customCards.push({
   type: "pipecat-assist-card",
   name: "Pipecat Assist",
   description: "Realtime Pipecat Assist voice card.",
+  preview: true,
 });

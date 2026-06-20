@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.35
+
+- Automatically register the Lovelace card as a dashboard resource in storage
+  mode so it appears in the card picker under custom cards.
+- Added cache-busting for the Lovelace card module and made the card module
+  safe to load more than once.
+
 ## 0.1.34
 
 - Fixed Home Assistant Assist language filtering by advertising all languages

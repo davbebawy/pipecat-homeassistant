@@ -171,8 +171,20 @@ WebRTC card.
 
 ### Lovelace WebRTC card
 
-The custom component automatically loads the dashboard card module when the
-Pipecat Assist integration is installed. Add a manual card:
+The custom component automatically registers the dashboard card module when the
+Pipecat Assist integration is installed. In the default Lovelace storage mode,
+open a dashboard, select **Add card**, and choose **Pipecat Assist** from
+**Custom cards**.
+
+If your Lovelace resources are managed in YAML mode, add the card module as a
+resource and then add a manual card:
+
+```yaml
+lovelace:
+  resources:
+    - url: /pipecat_assist/pipecat-assist-card.js?v=0.1.35
+      type: module
+```
 
 ```yaml
 type: custom:pipecat-assist-card
