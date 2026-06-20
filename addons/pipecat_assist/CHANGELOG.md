@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.33
+
+- Fixed Lovelace card static asset registration on Home Assistant versions
+  where `async_register_static_paths` is exposed on `hass.http` instead of as a
+  module-level helper.
+
 ## 0.1.32
 
 - Auto-detect the Pipecat Assist add-on through the Home Assistant Supervisor

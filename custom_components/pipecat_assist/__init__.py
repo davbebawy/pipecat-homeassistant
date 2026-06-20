@@ -53,15 +53,32 @@ async def _async_register_static_path(hass: HomeAssistant) -> None:
     """Expose Lovelace card assets from the integration."""
 
     www_path = Path(__file__).parent / "www"
+    route = "/pipecat_assist"
     try:
-        from homeassistant.components.http import (  # type: ignore[attr-defined]
-            StaticPathConfig,
-            async_register_static_paths,
-        )
+        from homeassistant.components.http import StaticPathConfig
+    except ImportError:
+        StaticPathConfig = None  # type: ignore[assignment]
 
+    if StaticPathConfig and hasattr(hass.http, "async_register_static_paths"):
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(route, str(www_path), True)]
+        )
+        return
+
+    try:
+        from homeassistant.components.http import async_register_static_paths
+    except ImportError:
+        async_register_static_paths = None  # type: ignore[assignment]
+
+    if StaticPathConfig and async_register_static_paths:
         await async_register_static_paths(
             hass,
-            [StaticPathConfig("/pipecat_assist", str(www_path), True)],
+            [StaticPathConfig(route, str(www_path), True)],
         )
-    except (ImportError, AttributeError):
-        hass.http.register_static_path("/pipecat_assist", str(www_path), True)
+        return
+
+    if hasattr(hass.http, "register_static_path"):
+        hass.http.register_static_path(route, str(www_path), True)
+        return
+
+    raise RuntimeError("Home Assistant HTTP static path registration is unavailable")
