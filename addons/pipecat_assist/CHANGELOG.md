@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.36
+
+- Fixed the classic Home Assistant Assist bridge by wrapping raw PCM microphone
+  audio into a valid WAV file before sending it to cloud STT providers.
+- Changed HA Assist TTS output to default to MP3 and honor Home Assistant's
+  preferred output format, avoiding unnecessary playback conversion failures.
+
 ## 0.1.35
 
 - Automatically register the Lovelace card as a dashboard resource in storage

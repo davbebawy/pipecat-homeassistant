@@ -7,6 +7,7 @@ import asyncio
 import hmac
 import os
 import time
+import wave
 from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
@@ -90,6 +91,19 @@ STARTED_AT = time.time()
 UI_DIR = Path(__file__).parent / "ui"
 UI_CACHE_HEADERS = {"Cache-Control": "no-store"}
 
+DEFAULT_HA_STT_SAMPLE_RATE = 16000
+DEFAULT_HA_STT_SAMPLE_WIDTH = 2
+DEFAULT_HA_STT_CHANNELS = 1
+OPENAI_TTS_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
+TTS_MEDIA_TYPES = {
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "mp3": "audio/mpeg",
+    "opus": "audio/ogg",
+    "pcm": "audio/L16",
+    "wav": "audio/wav",
+}
+
 app.mount("/assets", StaticFiles(directory=UI_DIR), name="assets")
 
 
@@ -108,6 +122,64 @@ def _extract_token(request: Request) -> str:
 
 def _is_offer_path(path: str) -> bool:
     return path == "/api/offer" or (path.startswith("/sessions/") and path.endswith("/api/offer"))
+
+
+def _parse_speech_content(value: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for entry in value.split(";"):
+        key, _, raw = entry.strip().partition("=")
+        if key:
+            fields[key] = raw.strip()
+    return fields
+
+
+def _wav_from_pcm(
+    audio: bytes,
+    *,
+    sample_rate: int = DEFAULT_HA_STT_SAMPLE_RATE,
+    sample_width: int = DEFAULT_HA_STT_SAMPLE_WIDTH,
+    channels: int = DEFAULT_HA_STT_CHANNELS,
+) -> bytes:
+    output = BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(sample_width)
+        writer.setframerate(sample_rate)
+        writer.writeframes(audio)
+    return output.getvalue()
+
+
+def _audio_for_cloud_stt(request: Request, audio: bytes) -> tuple[bytes, str]:
+    """Return a valid upload payload for cloud STT APIs.
+
+    Home Assistant's live Assist pipeline streams raw 16-bit PCM chunks while
+    advertising WAV/PCM metadata. Cloud HTTP STT APIs expect a real WAV file.
+    """
+
+    metadata = _parse_speech_content(request.headers.get("x-speech-content", ""))
+    content_type = request.headers.get("content-type") or "audio/wav"
+    audio_format = metadata.get("format", "wav").lower()
+    codec = metadata.get("codec", "pcm").lower()
+    if audio_format == "wav" and codec == "pcm" and not audio.startswith(b"RIFF"):
+        sample_rate = int(metadata.get("sample_rate") or DEFAULT_HA_STT_SAMPLE_RATE)
+        bit_rate = int(metadata.get("bit_rate") or 16)
+        channels = int(metadata.get("channel") or DEFAULT_HA_STT_CHANNELS)
+        sample_width = max(1, bit_rate // 8)
+        return _wav_from_pcm(
+            audio,
+            sample_rate=sample_rate,
+            sample_width=sample_width,
+            channels=channels,
+        ), "audio/wav"
+    return audio, content_type
+
+
+def _preferred_tts_format(payload: dict[str, Any]) -> str:
+    options = payload.get("options")
+    if not isinstance(options, dict):
+        return "mp3"
+    preferred = str(options.get("preferred_format") or "").strip().lower()
+    return preferred if preferred in OPENAI_TTS_FORMATS else "mp3"
 
 
 @app.middleware("http")
@@ -369,13 +441,14 @@ async def api_stt(request: Request, flow_id: str | None = None):
     audio = await request.body()
     if not audio:
         raise HTTPException(status_code=400, detail="No audio was provided")
+    stt_audio, stt_content_type = _audio_for_cloud_stt(request, audio)
 
     if integration.kind in {"openai", "openai_cloud"}:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=_integration_api_key(integration, "STT", config.openai_api_key))
         result = await client.audio.transcriptions.create(
-            file=("speech.wav", BytesIO(audio), request.headers.get("content-type") or "audio/wav"),
+            file=("speech.wav", BytesIO(stt_audio), stt_content_type),
             model=model or DEFAULT_OPENAI_STT_MODEL,
             language=_runtime_language(flow, integration) or None,
         )
@@ -384,11 +457,11 @@ async def api_stt(request: Request, flow_id: str | None = None):
     if integration.kind == "deepgram":
         headers = {
             "Authorization": f"Token {_integration_api_key(integration, 'STT')}",
-            "Content-Type": request.headers.get("content-type") or "audio/wav",
+            "Content-Type": stt_content_type,
         }
         params = {"model": model or DEFAULT_DEEPGRAM_MODEL, "smart_format": "true"}
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post("https://api.deepgram.com/v1/listen", params=params, headers=headers, content=audio)
+            response = await client.post("https://api.deepgram.com/v1/listen", params=params, headers=headers, content=stt_audio)
             response.raise_for_status()
         data = response.json()
         transcript = (
@@ -419,6 +492,7 @@ async def api_tts(payload: dict[str, Any]):
     integration = _require_integration(integration, "TTS", fields=())
     model = _step_model_for(step, integration, "tts", DEFAULT_OPENAI_TTS_MODEL)
     voice = _step_voice(step, integration, DEFAULT_OPENAI_TTS_VOICE)
+    response_format = _preferred_tts_format(payload)
 
     if integration.kind in {"openai", "openai_cloud"}:
         from openai import AsyncOpenAI
@@ -428,10 +502,14 @@ async def api_tts(payload: dict[str, Any]):
             model=model or DEFAULT_OPENAI_TTS_MODEL,
             voice=voice or DEFAULT_OPENAI_TTS_VOICE,
             input=text,
-            response_format="wav",
+            response_format=response_format,
             speed=_runtime_speed(flow, integration),
         )
-        return Response(content=result.content, media_type="audio/wav", headers={"X-Audio-Extension": "wav"})
+        return Response(
+            content=result.content,
+            media_type=TTS_MEDIA_TYPES.get(response_format, "audio/mpeg"),
+            headers={"X-Audio-Extension": response_format},
+        )
 
     if integration.kind == "elevenlabs":
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice or DEFAULT_ELEVENLABS_VOICE}"

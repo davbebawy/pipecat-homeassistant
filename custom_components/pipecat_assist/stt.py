@@ -14,6 +14,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_FLOW_ID, CONF_TOKEN, CONF_URL, SUPPORTED_LANGUAGES
 
+DEFAULT_SAMPLE_RATE = int(stt.AudioSampleRates.SAMPLERATE_16000)
+DEFAULT_BIT_RATE = int(stt.AudioBitRates.BITRATE_16)
+DEFAULT_CHANNELS = int(stt.AudioChannels.CHANNEL_MONO)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -66,7 +70,14 @@ class PipecatAssistSpeechToTextEntity(stt.SpeechToTextEntity):
         """Return supported sample rates."""
 
         return [
+            stt.AudioSampleRates.SAMPLERATE_8000,
+            stt.AudioSampleRates.SAMPLERATE_11000,
             stt.AudioSampleRates.SAMPLERATE_16000,
+            stt.AudioSampleRates.SAMPLERATE_18900,
+            stt.AudioSampleRates.SAMPLERATE_22000,
+            stt.AudioSampleRates.SAMPLERATE_32000,
+            stt.AudioSampleRates.SAMPLERATE_37800,
+            stt.AudioSampleRates.SAMPLERATE_44100,
             stt.AudioSampleRates.SAMPLERATE_48000,
         ]
 
@@ -85,12 +96,15 @@ class PipecatAssistSpeechToTextEntity(stt.SpeechToTextEntity):
 
         url = self._entry.data[CONF_URL].rstrip("/")
         token = self._entry.data.get(CONF_TOKEN)
+        sample_rate = int(metadata.sample_rate or DEFAULT_SAMPLE_RATE)
+        bit_rate = int(metadata.bit_rate or DEFAULT_BIT_RATE)
+        channels = int(metadata.channel or DEFAULT_CHANNELS)
         headers = {
             "Content-Type": f"audio/{metadata.format}",
             "X-Speech-Content": (
                 f"format={metadata.format}; codec={metadata.codec}; "
-                f"sample_rate={int(metadata.sample_rate)}; bit_rate={int(metadata.bit_rate)}; "
-                f"channel={int(metadata.channel)}; language={metadata.language}"
+                f"sample_rate={sample_rate}; bit_rate={bit_rate}; "
+                f"channel={channels}; language={metadata.language}"
             ),
         }
         if token:

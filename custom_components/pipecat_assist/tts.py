@@ -6,7 +6,12 @@ from typing import Any
 
 import aiohttp
 
-from homeassistant.components.tts import TextToSpeechEntity, TtsAudioType
+from homeassistant.components.tts import (
+    ATTR_PREFERRED_FORMAT,
+    ATTR_VOICE,
+    TextToSpeechEntity,
+    TtsAudioType,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -38,7 +43,7 @@ class PipecatAssistTextToSpeechEntity(TextToSpeechEntity):
     _attr_name = "Pipecat Assist"
     _attr_default_language = DEFAULT_LANGUAGE
     _attr_supported_languages = SUPPORTED_LANGUAGES
-    _attr_supported_options: list[str] = []
+    _attr_supported_options = [ATTR_PREFERRED_FORMAT, ATTR_VOICE]
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -72,7 +77,7 @@ class PipecatAssistTextToSpeechEntity(TextToSpeechEntity):
             ) as response:
                 if response.status >= 400:
                     return None, None
-                extension = response.headers.get("X-Audio-Extension", "wav")
+                extension = response.headers.get("X-Audio-Extension", "mp3")
                 return extension, await response.read()
         except aiohttp.ClientError:
             return None, None
