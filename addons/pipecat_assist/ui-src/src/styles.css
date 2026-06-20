@@ -478,6 +478,7 @@ h3 {
 }
 
 .node {
+  position: relative;
   display: grid;
   flex: 0 0 134px;
   align-content: center;
@@ -485,10 +486,48 @@ h3 {
   gap: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 12px;
+  padding: 0;
   color: var(--ink);
   background: white;
   text-align: left;
+  overflow: hidden;
+}
+
+.node-body {
+  display: grid;
+  width: 100%;
+  min-height: 100%;
+  align-content: center;
+  justify-items: start;
+  gap: 8px;
+  border: 0;
+  padding: 12px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.node-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid rgba(211, 76, 63, 0.35);
+  border-radius: 999px;
+  color: white;
+  background: var(--red);
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.node:hover .node-delete,
+.node:focus-within .node-delete {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .node.selected {
@@ -496,7 +535,7 @@ h3 {
   box-shadow: inset 0 0 0 2px rgba(44, 182, 125, 0.18);
 }
 
-.node span {
+.node-body span {
   max-width: 100%;
   overflow: hidden;
   color: var(--muted);
@@ -1297,8 +1336,11 @@ html[data-theme="dark"] .status-pill.error {
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
+  width: 92px;
   height: 38px;
   min-height: 38px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: 7px;
   border: 1px solid rgba(44, 182, 125, 0.45);
   border-radius: 6px;
@@ -1309,6 +1351,7 @@ html[data-theme="dark"] .status-pill.error {
   font-weight: 800;
   line-height: 1;
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .active-badge svg,
@@ -1319,6 +1362,7 @@ html[data-theme="dark"] .status-pill.error {
   color: inherit;
   font-size: inherit;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .pipeline-editor-grid {

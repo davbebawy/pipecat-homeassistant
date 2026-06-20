@@ -388,19 +388,32 @@ def _noise_reduction(flow: FlowConfig):
     return InputAudioNoiseReduction(type=flow.noise_reduction)
 
 
-def _session_properties(flow: FlowConfig, tools_schema, voice: str | None = None) -> SessionProperties:
+def _runtime_language(flow: FlowConfig, integration: IntegrationConfig | None) -> str:
+    return (integration.language if integration else "") or flow.language or "en"
+
+
+def _runtime_speed(flow: FlowConfig, integration: IntegrationConfig | None) -> float:
+    return float((integration.speed if integration else None) or flow.speed or 1.0)
+
+
+def _session_properties(
+    flow: FlowConfig,
+    tools_schema,
+    voice: str | None = None,
+    integration: IntegrationConfig | None = None,
+) -> SessionProperties:
     tools = tools_schema if tools_schema and tools_schema.standard_tools else None
     return SessionProperties(
         audio=AudioConfiguration(
             input=AudioInput(
                 transcription=InputAudioTranscription(
                     model=flow.transcription_model,
-                    language=flow.language,
+                    language=_runtime_language(flow, integration),
                 ),
                 turn_detection=_turn_detection(flow),
                 noise_reduction=_noise_reduction(flow),
             ),
-            output=AudioOutput(voice=voice or flow.voice, speed=flow.speed),
+            output=AudioOutput(voice=voice or flow.voice, speed=_runtime_speed(flow, integration)),
         ),
         output_modalities=["audio"],
         tools=tools,
@@ -664,7 +677,7 @@ def _gemini_live_service(
         "model": _gemini_model(model),
         "system_instruction": flow.instructions,
         "voice": _gemini_voice(flow, integration),
-        "language": flow.language or "en-US",
+        "language": _runtime_language(flow, integration) or "en-US",
         "vad": _gemini_vad(flow),
     }
     if flow.max_output_tokens:
@@ -693,6 +706,7 @@ def _openai_realtime_service(
                 flow,
                 tools_schema,
                 voice=_openai_voice(flow, integration),
+                integration=integration,
             ),
         ),
     )
@@ -758,7 +772,7 @@ def _build_stt_service(config: RuntimeConfig, flow: FlowConfig):
         return OpenAIRealtimeSTTService(
             api_key=_integration_api_key(integration, "STT", config.openai_api_key),
             model=model or DEFAULT_OPENAI_STT_MODEL,
-            language=flow.language or "en",
+            language=_runtime_language(flow, integration),
         )
 
     raise RuntimeError(f"STT provider {integration.kind} is not supported by composed runtime")
@@ -851,6 +865,7 @@ def _build_tts_service(config: RuntimeConfig, flow: FlowConfig):
     integration = _require_integration(integration, "TTS", fields=())
     model = _step_model_for(step, integration, "tts")
     voice = _step_voice(step, integration)
+    speed = _runtime_speed(flow, integration)
 
     if integration.kind == "cartesia":
         from pipecat.services.cartesia.tts import CartesiaTTSService
@@ -883,7 +898,7 @@ def _build_tts_service(config: RuntimeConfig, flow: FlowConfig):
             location=integration.location or None,
             settings=GoogleHttpTTSService.Settings(
                 voice=voice or DEFAULT_GOOGLE_TTS_VOICE,
-                speaking_rate=flow.speed,
+                speaking_rate=speed,
             ),
         )
     if integration.kind == "elevenlabs":
@@ -894,7 +909,7 @@ def _build_tts_service(config: RuntimeConfig, flow: FlowConfig):
             settings=ElevenLabsTTSService.Settings(
                 model=model or DEFAULT_ELEVENLABS_MODEL,
                 voice=voice or DEFAULT_ELEVENLABS_VOICE,
-                speed=flow.speed,
+                speed=speed,
             ),
         )
     if integration.kind in {"openai", "openai_cloud"}:
@@ -905,7 +920,7 @@ def _build_tts_service(config: RuntimeConfig, flow: FlowConfig):
             settings=OpenAITTSService.Settings(
                 model=model or DEFAULT_OPENAI_TTS_MODEL,
                 voice=voice or DEFAULT_OPENAI_TTS_VOICE,
-                speed=flow.speed,
+                speed=speed,
             ),
         )
     if integration.kind == "soniox":

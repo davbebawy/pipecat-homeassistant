@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.27
+
+- Cleaned the pipeline editor inspector so step-specific controls are shown
+  only for the selected step.
+- Moved language and speech speed defaults from pipeline editing into
+  integration runtime defaults and wired them into provider setup.
+- Added hover delete controls to pipeline step tiles and fixed the active
+  pipeline badge layout.
+
 ## 0.1.26
 
 - Added first-run Gemini Live setup guidance above the assistant voice test

@@ -118,6 +118,22 @@ const providerKinds = [
 
 const protectedIntegrationIds = ["gemini", "gemini-cloud", "openai", "openai-cloud", "ha-mcp"];
 
+const languageIntegrationKinds = [
+  "gemini",
+  "gemini_cloud",
+  "openai",
+  "openai_cloud",
+  "soniox",
+  "deepgram",
+  "gradium",
+  "speechmatics",
+  "openai_compatible",
+  "ollama",
+  "local_runtime",
+];
+
+const speedIntegrationKinds = ["openai", "openai_cloud", "google_cloud_tts", "elevenlabs"];
+
 const stepTypes = [
   ["transport", "Transport", Radio, "neutral"],
   ["vad", "Turn", Mic2, "amber"],
@@ -1059,7 +1075,11 @@ function deriveFlowMode(flow, config) {
 
 function ensureShape(config) {
   const shaped = clone(config);
-  shaped.integrations ||= [];
+  shaped.integrations = (shaped.integrations || []).map((integration) => ({
+    ...integration,
+    language: integration.language || "en",
+    speed: Number(integration.speed || 1),
+  }));
   shaped.audio_debug_enabled = Boolean(shaped.audio_debug_enabled);
   shaped.audio_debug_keep_sessions = Math.min(
     100,
@@ -1470,9 +1490,13 @@ function App() {
 
   function deleteStep(stepId) {
     if (selectedFlow.steps.length <= 1) return;
+    const removedStep = selectedFlow.steps.find((step) => step.id === stepId);
     updateSelectedFlow((flow) => {
       flow.pipeline_template = "custom";
       flow.steps = flow.steps.filter((step) => step.id !== stepId);
+      if (removedStep?.kind === "flow") {
+        flow.conversation_flow = { ...(flow.conversation_flow || clone(defaultFlow.conversation_flow)), enabled: false };
+      }
       return flow;
     });
     setSelectedStepId(selectedFlow.steps.find((step) => step.id !== stepId)?.id || "");
@@ -1519,6 +1543,8 @@ function App() {
       endpoint: "",
       region: "",
       deployment: "",
+      language: "en",
+      speed: 1,
       default_model: providerDefaults(kind).text_model || "",
       default_realtime_model: providerDefaults(kind).model || "",
       default_stt_model: providerDefaults(kind).stt_model || "",
@@ -1972,268 +1998,6 @@ function AssistantView({ config, flow, status, setTab }) {
   );
 }
 
-function OldPipelineView({
-  config,
-  flow,
-  selectedStep,
-  setSelectedStepId,
-  updateFlow,
-  updateStep,
-  addStep,
-  deleteStep,
-  duplicateFlow,
-  deleteFlow,
-}) {
-  return (
-    <div className="workspace-grid">
-      <section className="panel main-panel">
-        <div className="panel-head">
-          <div>
-            <h3>Pipeline</h3>
-            <span>{flow.steps.length} steps</span>
-          </div>
-          <div className="button-row">
-            <Button icon={Copy} variant="secondary" onClick={duplicateFlow}>
-              Duplicate
-            </Button>
-            <Button icon={Trash2} variant="danger" onClick={deleteFlow} disabled={config.flows.length <= 1}>
-              Delete
-            </Button>
-          </div>
-        </div>
-
-        <div className="template-groups">
-          {[...new Set(templates.map((template) => template.group || "Other"))].map((group) => (
-            <div className="template-group" key={group}>
-              <span>{group}</span>
-              <div className="template-grid">
-                {templates
-                  .filter((template) => (template.group || "Other") === group)
-                  .map((template) => {
-                    const Icon = template.icon;
-                    return (
-                      <button
-                        key={template.id}
-                        className={
-                          flow.pipeline_template === template.id
-                            ? `template-card active ${template.accent}`
-                            : `template-card ${template.accent}`
-                        }
-                        onClick={() => updateFlow((draft) => applyTemplate(draft, template.id, config))}
-                      >
-                        <Icon size={20} />
-                        <strong>{template.label}</strong>
-                        <small>{template.mode}</small>
-                      </button>
-                    );
-                  })}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="pipeline-canvas">
-          {flow.steps.map((step, index) => {
-            const Icon = stepIcon(step.kind);
-            return (
-              <React.Fragment key={step.id}>
-                <button
-                  className={selectedStep?.id === step.id ? "node selected" : "node"}
-                  onClick={() => setSelectedStepId(step.id)}
-                >
-                  <Icon size={19} />
-                  <strong>{step.label}</strong>
-                  <span>{step.integration_id || step.kind}</span>
-                </button>
-                {index < flow.steps.length - 1 && <div className="connector" />}
-              </React.Fragment>
-            );
-          })}
-          <button className="node add-node" onClick={() => addStep("llm")}>
-            <Plus size={18} />
-            <strong>Add</strong>
-            <span>step</span>
-          </button>
-        </div>
-      </section>
-
-      <section className="panel inspector">
-        <div className="panel-head">
-          <div>
-            <h3>Inspector</h3>
-            <span>{selectedStep?.label || flow.name}</span>
-          </div>
-        </div>
-
-        <div className="form-grid">
-          <Field label="Name">
-            <input value={flow.name} onChange={(event) => updateFlow((draft) => ({ ...draft, name: event.target.value }))} />
-          </Field>
-          <Field label="ID">
-            <input value={flow.id} readOnly />
-          </Field>
-          <Toggle checked={flow.enabled} onChange={(value) => updateFlow((draft) => ({ ...draft, enabled: value }))} label="Enabled" />
-          <Toggle checked={flow.video_enabled} onChange={(value) => updateFlow((draft) => ({ ...draft, video_enabled: value }))} label="Video input" />
-        </div>
-
-        {selectedStep?.kind === "flow" ? (
-          <>
-            <div className="divider" />
-            <ConversationFlowEditor flow={flow} updateFlow={updateFlow} />
-          </>
-        ) : selectedStep ? (
-          <>
-            <div className="divider" />
-            <div className="form-grid">
-              <Field label="Step label">
-                <input
-                  value={selectedStep.label}
-                  onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, label: event.target.value }))}
-                />
-              </Field>
-              <Field label="Step type">
-                <select
-                  value={selectedStep.kind}
-                  onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, kind: event.target.value }))}
-                >
-                  {stepTypes.map(([id, label]) => (
-                    <option key={id} value={id}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              {["stt", "llm", "tools", "tts", "output"].includes(selectedStep.kind) && (
-                <Field label="Integration">
-                  <select
-                    value={selectedStep.integration_id || ""}
-                    onChange={(event) => {
-                      const integrationId = event.target.value;
-                      const defaults = stepDefaults(config, integrationId, selectedStep.kind, flow.mode);
-                      updateStep(selectedStep.id, (step) => ({
-                        ...step,
-                        integration_id: integrationId,
-                        model: ["stt", "llm", "tts"].includes(step.kind) ? defaults.model || "" : step.model,
-                        voice:
-                          step.kind === "output" || step.kind === "tts"
-                            ? defaults.voice || ""
-                            : step.voice,
-                      }));
-                    }}
-                  >
-                    <option value="">None</option>
-                    {config.integrations.map((integration) => (
-                      <option key={integration.id} value={integration.id}>
-                        {integration.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              )}
-              {["stt", "llm", "tts"].includes(selectedStep.kind) && (
-                <Field label="Model">
-                  <input
-                    value={selectedStep.model || ""}
-                    onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, model: event.target.value }))}
-                  />
-                </Field>
-              )}
-              {["tts", "output"].includes(selectedStep.kind) && (
-                <Field label="Voice">
-                  <input
-                    value={selectedStep.voice || ""}
-                    onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, voice: event.target.value }))}
-                  />
-                </Field>
-              )}
-              <Toggle
-                checked={selectedStep.enabled}
-                onChange={(value) => updateStep(selectedStep.id, (step) => ({ ...step, enabled: value }))}
-                label="Step enabled"
-              />
-              <Button
-                icon={Trash2}
-                variant="danger"
-                onClick={() => deleteStep(selectedStep.id)}
-                disabled={flow.steps.length <= 1}
-              >
-                Remove step
-              </Button>
-            </div>
-          </>
-        ) : null}
-
-        <div className="divider" />
-        <div className="form-grid">
-          <Field label="Text model">
-            <input value={flow.text_model || ""} onChange={(event) => updateFlow((draft) => ({ ...draft, text_model: event.target.value }))} />
-          </Field>
-          <Field label="Language">
-            <input value={flow.language || "en"} onChange={(event) => updateFlow((draft) => ({ ...draft, language: event.target.value || "en" }))} />
-          </Field>
-          <Field label="Noise reduction">
-            <select value={flow.noise_reduction} onChange={(event) => updateFlow((draft) => ({ ...draft, noise_reduction: event.target.value }))}>
-              <option value="off">off</option>
-              <option value="near_field">near field</option>
-              <option value="far_field">far field</option>
-            </select>
-          </Field>
-          <Field label="VAD">
-            <select value={flow.vad_mode} onChange={(event) => updateFlow((draft) => ({ ...draft, vad_mode: event.target.value }))}>
-              <option value="semantic_vad">semantic</option>
-              <option value="server_vad">server</option>
-            </select>
-          </Field>
-          <Field label="VAD eagerness">
-            <select value={flow.vad_eagerness} onChange={(event) => updateFlow((draft) => ({ ...draft, vad_eagerness: event.target.value }))}>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="auto">auto</option>
-            </select>
-          </Field>
-          <Field label="Speed">
-            <input
-              type="number"
-              min="0.25"
-              max="1.5"
-              step="0.05"
-              value={flow.speed}
-              onChange={(event) => updateFlow((draft) => ({ ...draft, speed: Number(event.target.value || 1) }))}
-            />
-          </Field>
-          <Toggle checked={flow.mcp_enabled} onChange={(value) => updateFlow((draft) => ({ ...draft, mcp_enabled: value }))} label="MCP tools" />
-          <Toggle
-            checked={flow.interrupt_response}
-            onChange={(value) => updateFlow((draft) => ({ ...draft, interrupt_response: value }))}
-            label="Interrupt response"
-          />
-          <Field label="MCP allowlist" wide>
-            <input
-              value={(flow.mcp_tool_allowlist || []).join(", ")}
-              onChange={(event) =>
-                updateFlow((draft) => ({
-                  ...draft,
-                  mcp_tool_allowlist: event.target.value
-                    .split(",")
-                    .map((item) => item.trim())
-                    .filter(Boolean),
-                }))
-              }
-            />
-          </Field>
-          <Field label="Instructions" wide>
-            <textarea rows={8} value={flow.instructions} onChange={(event) => updateFlow((draft) => ({ ...draft, instructions: event.target.value }))} />
-          </Field>
-          <Field label="Greeting" wide>
-            <input value={flow.greeting} onChange={(event) => updateFlow((draft) => ({ ...draft, greeting: event.target.value }))} />
-          </Field>
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function PipelineView({
   config,
   flow,
@@ -2377,23 +2141,40 @@ function PipelineView({
           {flow.steps.map((step, index) => {
             const Icon = stepIcon(step.kind);
             const disabledFlow = step.kind === "flow" && !flowSupported;
+            const canDeleteThisStep = flow.steps.length > 1;
             return (
               <React.Fragment key={step.id}>
-                <button
+                <div
                   className={
                     selectedStep?.id === step.id
                       ? `node selected tone-${stepTone(step.kind)} ${disabledFlow ? "unsupported" : ""}`
                       : `node tone-${stepTone(step.kind)} ${disabledFlow ? "unsupported" : ""}`
                   }
-                  onClick={() => {
-                    setSelectedStepId(step.id);
-                    if (step.kind === "flow" && flowSupported) setPipelineStage("flow");
-                  }}
                 >
-                  <Icon size={19} />
-                  <strong>{step.label}</strong>
-                  <span>{disabledFlow ? "not available for S2S" : step.integration_id || step.kind}</span>
-                </button>
+                  <button
+                    className="node-body"
+                    onClick={() => {
+                      setSelectedStepId(step.id);
+                      if (step.kind === "flow" && flowSupported) setPipelineStage("flow");
+                    }}
+                  >
+                    <Icon size={19} />
+                    <strong>{step.label}</strong>
+                    <span>{disabledFlow ? "not available for S2S" : step.integration_id || step.kind}</span>
+                  </button>
+                  {canDeleteThisStep && (
+                    <button
+                      className="node-delete"
+                      title={`Remove ${step.label}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        deleteStep(step.id);
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
                 {index < flow.steps.length - 1 && (
                   <div className="connector">
                     <ArrowRight size={14} />
@@ -2412,24 +2193,8 @@ function PipelineView({
       </section>
 
       <section className={`panel inspector tone-panel-${selectedTone}`}>
-        <div className="panel-head">
-          <div>
-            <h3>{selectedStep ? "Step" : "Pipeline"}</h3>
-            <span>{selectedStep?.label || flow.name}</span>
-          </div>
-        </div>
-
-        <div className="form-grid">
-          <Field label="Name">
-            <input value={flow.name} onChange={(event) => updateFlow((draft) => ({ ...draft, name: event.target.value }))} />
-          </Field>
-          <Toggle checked={flow.enabled} onChange={(value) => updateFlow((draft) => ({ ...draft, enabled: value }))} label="Enabled" />
-          <Toggle checked={flow.video_enabled} onChange={(value) => updateFlow((draft) => ({ ...draft, video_enabled: value }))} label="Video input" />
-        </div>
-
         {selectedStep?.kind === "flow" ? (
           <>
-            <div className="divider" />
             <div className="flow-inline">
               <strong>{flowSupported ? "Pipecat Flow editor" : "Unavailable"}</strong>
               <span>
@@ -2444,14 +2209,7 @@ function PipelineView({
           </>
         ) : selectedStep ? (
           <>
-            <div className="divider" />
             <div className="form-grid">
-              <Field label="Step label">
-                <input
-                  value={selectedStep.label}
-                  onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, label: event.target.value }))}
-                />
-              </Field>
               {["stt", "llm", "tools", "tts", "output"].includes(selectedStep.kind) && (
                 <Field label="Integration">
                   <select
@@ -2482,87 +2240,72 @@ function PipelineView({
                 onChange={(value) => updateStep(selectedStep.id, (step) => ({ ...step, enabled: value }))}
                 label="Step enabled"
               />
-              <Button
-                icon={Trash2}
-                variant="danger"
-                onClick={() => deleteStep(selectedStep.id)}
-                disabled={flow.steps.length <= 1}
-              >
-                Remove step
-              </Button>
             </div>
           </>
         ) : null}
 
-        <div className="divider" />
-        <div className="form-grid">
-          <Field label="Language">
-            <input value={flow.language || "en"} onChange={(event) => updateFlow((draft) => ({ ...draft, language: event.target.value || "en" }))} />
-          </Field>
-          <Field label="Noise reduction">
-            <select value={flow.noise_reduction} onChange={(event) => updateFlow((draft) => ({ ...draft, noise_reduction: event.target.value }))}>
-              <option value="off">off</option>
-              <option value="near_field">near field</option>
-              <option value="far_field">far field</option>
-            </select>
-          </Field>
-          <Field label="VAD">
-            <select value={flow.vad_mode} onChange={(event) => updateFlow((draft) => ({ ...draft, vad_mode: event.target.value }))}>
-              <option value="semantic_vad">semantic</option>
-              <option value="server_vad">server</option>
-            </select>
-          </Field>
-          <Field label="VAD eagerness">
-            <select value={flow.vad_eagerness} onChange={(event) => updateFlow((draft) => ({ ...draft, vad_eagerness: event.target.value }))}>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="auto">auto</option>
-            </select>
-          </Field>
-          <p className="field-help wide">
-            Turn detection configures provider/server VAD for speech-to-speech and local VAD for composed realtime
-            pipelines that include a Turn step.
-          </p>
-          <Field label="Speed">
-            <select value={String(flow.speed)} onChange={(event) => updateFlow((draft) => ({ ...draft, speed: Number(event.target.value || 1) }))}>
-              <option value="0.75">0.75x</option>
-              <option value="0.9">0.9x</option>
-              <option value="1">1.0x</option>
-              <option value="1.1">1.1x</option>
-              <option value="1.25">1.25x</option>
-            </select>
-          </Field>
-          {showOpenAiBargeIn ? (
-            <>
+        {selectedStep?.kind === "vad" && (
+          <>
+            <div className="divider" />
+            <div className="form-grid">
+              {showOpenAiBargeIn && (
+                <>
+                  <Field label="Noise reduction">
+                    <select value={flow.noise_reduction} onChange={(event) => updateFlow((draft) => ({ ...draft, noise_reduction: event.target.value }))}>
+                      <option value="off">off</option>
+                      <option value="near_field">near field</option>
+                      <option value="far_field">far field</option>
+                    </select>
+                  </Field>
+                  <Field label="VAD">
+                    <select value={flow.vad_mode} onChange={(event) => updateFlow((draft) => ({ ...draft, vad_mode: event.target.value }))}>
+                      <option value="semantic_vad">semantic</option>
+                      <option value="server_vad">server</option>
+                    </select>
+                  </Field>
+                </>
+              )}
+              <Field label="VAD eagerness">
+                <select value={flow.vad_eagerness} onChange={(event) => updateFlow((draft) => ({ ...draft, vad_eagerness: event.target.value }))}>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="auto">auto</option>
+                </select>
+              </Field>
+              {showOpenAiBargeIn && (
+                <Toggle
+                  checked={flow.interrupt_response}
+                  onChange={(value) => updateFlow((draft) => ({ ...draft, interrupt_response: value }))}
+                  label="Interrupt response"
+                />
+              )}
+            </div>
+          </>
+        )}
+
+        {selectedStep?.kind === "llm" && (
+          <>
+            <div className="divider" />
+            <div className="form-grid">
+              <Field label="Instructions" wide>
+                <textarea rows={8} value={flow.instructions} onChange={(event) => updateFlow((draft) => ({ ...draft, instructions: event.target.value }))} />
+              </Field>
               <Toggle
-                checked={flow.interrupt_response}
-                onChange={(value) => updateFlow((draft) => ({ ...draft, interrupt_response: value }))}
-                label="OpenAI barge-in"
+                checked={!flow.greeting}
+                onChange={(value) => updateFlow((draft) => ({ ...draft, greeting: value ? "" : defaultFlow.greeting }))}
+                label="No greeting"
               />
-              <p className="field-help">Controls OpenAI Realtime interrupt_response in semantic VAD.</p>
-            </>
-          ) : (
-            <p className="field-help wide">
-              Barge-in is provider-managed for this pipeline, so no local switch is shown.
-            </p>
-          )}
-          <Field label="Instructions" wide>
-            <textarea rows={8} value={flow.instructions} onChange={(event) => updateFlow((draft) => ({ ...draft, instructions: event.target.value }))} />
-          </Field>
-          <Toggle
-            checked={!flow.greeting}
-            onChange={(value) => updateFlow((draft) => ({ ...draft, greeting: value ? "" : defaultFlow.greeting }))}
-            label="No greeting"
-          />
-          <Field label="Greeting" wide>
-            <input
-              value={flow.greeting}
-              disabled={!flow.greeting}
-              onChange={(event) => updateFlow((draft) => ({ ...draft, greeting: event.target.value }))}
-            />
-          </Field>
-        </div>
+              <Field label="Greeting" wide>
+                <input
+                  value={flow.greeting}
+                  disabled={!flow.greeting}
+                  onChange={(event) => updateFlow((draft) => ({ ...draft, greeting: event.target.value }))}
+                />
+              </Field>
+            </div>
+          </>
+        )}
       </section>
     </div>
   );
@@ -3484,6 +3227,7 @@ function IntegrationsView({
           resetMcpDefaults={resetMcpDefaults}
           mcpResult={mcpResult}
         />
+        <IntegrationRuntimeDefaults integration={selectedIntegration} updateIntegration={updateIntegration} />
         <div className="editor-actions">
           <Button icon={RotateCcw} variant="secondary" onClick={() => resetIntegrationDefaults(selectedIntegration.id)}>
             Reset defaults
@@ -3520,6 +3264,18 @@ function IntegrationIdentity({ integration, updateIntegration }) {
         </Field>
       </div>
     </div>
+  );
+}
+
+function IntegrationRuntimeDefaults({ integration, updateIntegration }) {
+  const showLanguage = languageIntegrationKinds.includes(integration.kind);
+  const showSpeed = speedIntegrationKinds.includes(integration.kind);
+  if (!showLanguage && !showSpeed) return null;
+  return (
+    <SettingsSection title="Runtime defaults">
+      {showLanguage && <LanguageSetting integration={integration} updateIntegration={updateIntegration} />}
+      {showSpeed && <SpeedSetting integration={integration} updateIntegration={updateIntegration} />}
+    </SettingsSection>
   );
 }
 
@@ -3847,6 +3603,35 @@ function TextSetting({ integration, field, label, updateIntegration, wide = fals
   );
 }
 
+function LanguageSetting({ integration, updateIntegration }) {
+  return (
+    <Field label="Language">
+      <input
+        autoComplete="off"
+        value={integration.language || "en"}
+        onChange={(event) => updateIntegration(integration.id, (item) => ({ ...item, language: event.target.value || "en" }))}
+      />
+    </Field>
+  );
+}
+
+function SpeedSetting({ integration, updateIntegration }) {
+  return (
+    <Field label="Speed">
+      <select
+        value={String(integration.speed || 1)}
+        onChange={(event) => updateIntegration(integration.id, (item) => ({ ...item, speed: Number(event.target.value || 1) }))}
+      >
+        <option value="0.75">0.75x</option>
+        <option value="0.9">0.9x</option>
+        <option value="1">1.0x</option>
+        <option value="1.1">1.1x</option>
+        <option value="1.25">1.25x</option>
+      </select>
+    </Field>
+  );
+}
+
 function ModelSetting({
   integration,
   field,
@@ -4157,7 +3942,7 @@ function VoiceTest({ config, flow }) {
               version: "1.4.0",
               about: {
                 library: "pipecat-assist-ui",
-                library_version: "0.1.26",
+                library_version: "0.1.27",
                 platform: "browser",
               },
             },

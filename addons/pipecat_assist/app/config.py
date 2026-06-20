@@ -131,6 +131,8 @@ class IntegrationConfig(BaseModel):
     endpoint: str = ""
     region: str = ""
     deployment: str = ""
+    language: str = "en"
+    speed: float = Field(default=1.0, ge=0.25, le=1.5)
     default_model: str = ""
     default_realtime_model: str = ""
     default_stt_model: str = ""
