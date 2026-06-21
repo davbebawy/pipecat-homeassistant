@@ -953,13 +953,34 @@ async def _synthesize_tts_audio(
     text: str,
     payload: dict[str, Any],
 ) -> tuple[bytes, str, str]:
+    started_at = time.perf_counter()
     step, integration = _ha_assist_step_integration(config, flow, "tts", HA_TTS_BRIDGE_KINDS)
     if not integration:
         raise _bridge_unavailable("TTS", "Google Gemini, OpenAI Cloud, OpenAI Realtime, or ElevenLabs")
     integration = _require_integration(integration, "TTS", fields=())
-    model = _step_model_for(step, integration, "tts", DEFAULT_OPENAI_TTS_MODEL)
-    voice = _step_voice(step, integration, DEFAULT_OPENAI_TTS_VOICE)
+    if integration.kind in {"gemini", "gemini_cloud"}:
+        model_fallback = DEFAULT_GEMINI_TTS_MODEL
+        voice_fallback = DEFAULT_GEMINI_LIVE_VOICE
+    elif integration.kind == "elevenlabs":
+        model_fallback = DEFAULT_ELEVENLABS_MODEL
+        voice_fallback = DEFAULT_ELEVENLABS_VOICE
+    else:
+        model_fallback = DEFAULT_OPENAI_TTS_MODEL
+        voice_fallback = DEFAULT_OPENAI_TTS_VOICE
+
+    model = _step_model_for(step, integration, "tts", model_fallback)
+    voice = _step_voice(step, integration, voice_fallback)
     response_format = _preferred_tts_format(payload)
+    logger.info(
+        "HA Assist TTS synth started flow={} integration={} kind={} model={} voice={} text={} requested_format={}",
+        flow.id,
+        integration.name,
+        integration.kind,
+        model,
+        voice,
+        _text_fingerprint(text),
+        response_format,
+    )
 
     if integration.kind in {"openai", "openai_cloud"}:
         from openai import AsyncOpenAI
@@ -975,17 +996,34 @@ async def _synthesize_tts_audio(
             )
 
         result = await _provider_call(f"{integration.name} TTS", request_openai_tts)
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model or DEFAULT_OPENAI_TTS_MODEL,
+            voice or DEFAULT_OPENAI_TTS_VOICE,
+            (time.perf_counter() - started_at) * 1000,
+        )
         return result.content, TTS_MEDIA_TYPES.get(response_format, "audio/mpeg"), response_format
 
     if integration.kind in {"gemini", "gemini_cloud"}:
         api_key = _integration_api_key_or_400(integration, "TTS", os.getenv("GOOGLE_API_KEY", ""))
-        return await _synthesize_gemini_tts_audio(
+        audio = await _synthesize_gemini_tts_audio(
             api_key=api_key,
             integration=integration,
             model=model,
             text=text,
             voice=voice,
         )
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model or DEFAULT_GEMINI_TTS_MODEL,
+            voice or DEFAULT_GEMINI_LIVE_VOICE,
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return audio
 
     if integration.kind == "elevenlabs":
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice or DEFAULT_ELEVENLABS_VOICE}"
@@ -1005,6 +1043,14 @@ async def _synthesize_tts_audio(
                 return response
 
         response = await _provider_call("ElevenLabs TTS", request_elevenlabs_tts)
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model or DEFAULT_ELEVENLABS_MODEL,
+            voice or DEFAULT_ELEVENLABS_VOICE,
+            (time.perf_counter() - started_at) * 1000,
+        )
         return response.content, "audio/mpeg", "mp3"
 
     raise HTTPException(

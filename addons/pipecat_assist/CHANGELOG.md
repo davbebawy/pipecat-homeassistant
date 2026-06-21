@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.44
+
+- Fixed provider-specific default TTS voices so Gemini Cloud uses the Gemini
+  voice fallback instead of the OpenAI `marin` fallback when no voice is set.
+- Added TTS synthesis logs with provider, model, voice, and synthesis duration
+  to make slow HA Assist voice responses easier to diagnose.
+
 ## 0.1.43
 
 - Reuse HA Assist TTS prefetches even when Home Assistant requests a different
