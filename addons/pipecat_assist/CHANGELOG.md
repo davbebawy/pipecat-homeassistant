@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.55
+
+- Expanded the Home Assistant Assist bridge so explicit STT/TTS pipeline steps
+  can use Soniox, Deepgram, Speechmatics, Gradium, OpenAI, Gemini, Cartesia,
+  Google Cloud TTS, ElevenLabs, and local runtime integrations without silent
+  provider fallback.
+- Added HA Assist conversation support for Anthropic, AWS Bedrock, and Azure
+  OpenAI LLM steps, including MCP/web-search tool calling where the provider
+  supports tool use.
+- HA Assist now surfaces Gemini Live and streaming STT bridge failures as
+  provider errors instead of silently retrying through a different path.
+- Renamed Google Cloud TTS HTTP to a normal one-shot synthesis option and
+  limited Web Search provider selection to the LLM providers implemented by
+  the backend.
+
 ## 0.1.54
 
 - Added Speechmatics to the Home Assistant Assist STT bridge so composed

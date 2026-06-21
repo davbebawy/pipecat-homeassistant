@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin
 
 import httpx
 from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -70,6 +70,7 @@ from app.config import (
     DEFAULT_OPENAI_STT_MODEL,
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
+    DEFAULT_SONIOX_MODEL,
     DEFAULT_SPEECHMATICS_MODEL,
     DEFAULT_WEB_SEARCH_MODEL,
     ConfigStore,
@@ -112,8 +113,30 @@ TTS_MEDIA_TYPES = {
     "pcm": "audio/L16",
     "wav": "audio/wav",
 }
-HA_STT_BRIDGE_KINDS = {"deepgram", "gemini", "gemini_cloud", "openai", "openai_cloud", "speechmatics"}
-HA_TTS_BRIDGE_KINDS = {"elevenlabs", "gemini", "gemini_cloud", "openai", "openai_cloud"}
+HA_STT_BRIDGE_KINDS = {
+    "deepgram",
+    "gemini",
+    "gemini_cloud",
+    "gradium",
+    "local_runtime",
+    "openai",
+    "openai_cloud",
+    "soniox",
+    "speechmatics",
+}
+HA_TTS_BRIDGE_KINDS = {
+    "cartesia",
+    "elevenlabs",
+    "gemini",
+    "gemini_cloud",
+    "google_cloud_tts",
+    "google_streaming_tts",
+    "gradium",
+    "local_runtime",
+    "openai",
+    "openai_cloud",
+    "soniox",
+}
 PROVIDER_RETRY_STATUSES = {429, 500, 502, 503, 504}
 TTS_PREFETCH_TTL_SECONDS = 90
 TTS_PREFETCH: dict[tuple[str, str, str], tuple[float, Any]] = {}
@@ -732,8 +755,10 @@ async def api_conversation(payload: dict[str, Any]):
                 conversation_id=payload.get("conversation_id"),
             )
         except Exception as err:
-            logger.warning("HA Assist Gemini Live conversation cache failed: {}", err)
-            live_result = None
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini Live HA Assist conversation failed: {err}",
+            ) from err
         if live_result:
             live_result["continue_conversation"] = True
             logger.info(
@@ -744,6 +769,7 @@ async def api_conversation(payload: dict[str, Any]):
                 (time.perf_counter() - started_at) * 1000,
             )
             return live_result
+        raise HTTPException(status_code=502, detail="Gemini Live HA Assist conversation returned no speech")
 
     async def request():
         result = await run_text_conversation(
@@ -785,7 +811,7 @@ async def _transcribe_audio_bytes(
 ) -> dict[str, str]:
     step, integration = _ha_assist_step_integration(config, flow, "stt", HA_STT_BRIDGE_KINDS)
     if not integration:
-        raise _bridge_unavailable("STT", "Google Gemini, OpenAI Cloud, OpenAI Realtime, Deepgram, or Speechmatics")
+        raise _bridge_unavailable("STT", _ha_supported_stt_names())
     integration = _require_integration(integration, "STT", fields=())
     model = _step_model_for(step, integration, "stt", _ha_stt_model_fallback(integration))
     if not audio:
@@ -866,6 +892,25 @@ async def _transcribe_audio_bytes(
         )
         return {"text": str(transcript).strip()}
 
+    if integration.kind in {"gradium", "soniox"}:
+        async def request_streaming_stt() -> str:
+            queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+            await queue.put(audio)
+            await queue.put(None)
+            return await _streaming_transcribe_audio(
+                websocket=None,
+                queue=queue,
+                config=config,
+                flow=flow,
+                step=step,
+                integration=integration,
+                model=model,
+                metadata=metadata,
+            )
+
+        transcript = await _provider_call(f"{integration.name} STT", request_streaming_stt)
+        return {"text": transcript.strip()}
+
     if integration.kind == "speechmatics":
         async def request_speechmatics_stt() -> str:
             queue: asyncio.Queue[bytes | None] = asyncio.Queue()
@@ -883,9 +928,22 @@ async def _transcribe_audio_bytes(
         transcript = await _provider_call("Speechmatics STT", request_speechmatics_stt)
         return {"text": transcript.strip()}
 
+    if integration.kind == "local_runtime":
+        transcript = await _provider_call(
+            "Local runtime STT",
+            lambda: _local_runtime_transcribe(
+                integration=integration,
+                audio=stt_audio,
+                content_type=stt_content_type,
+                metadata=metadata,
+                model=model,
+            ),
+        )
+        return {"text": transcript.strip()}
+
     raise HTTPException(
         status_code=400,
-        detail=f"HA Assist STT bridge does not support {integration.name}. Use Gemini, OpenAI Cloud, OpenAI Realtime, Deepgram, or Speechmatics STT.",
+        detail=f"HA Assist STT bridge does not support {integration.name}. Use {_ha_supported_stt_names()}.",
     )
 
 
@@ -951,19 +1009,10 @@ async def _handle_ha_live_stt_stream(
             await live_queue.put(None)
 
     transcript = await _wait_for_ha_live_transcript(turn)
+    if turn.error:
+        raise HTTPException(status_code=502, detail=f"Gemini Live HA Assist bridge failed: {turn.error}")
     if not transcript:
-        logger.warning(
-            "Gemini Live HA Assist did not return a transcript for flow {}; falling back to buffered STT",
-            flow.id,
-        )
-        result = await _transcribe_audio_bytes(
-            config=config,
-            flow=flow,
-            audio=b"".join(chunks),
-            metadata=metadata,
-            content_type=content_type,
-        )
-        transcript = result.get("text", "")
+        raise HTTPException(status_code=502, detail="Gemini Live HA Assist bridge returned no transcript")
 
     await websocket.send_json({"type": "final", "text": transcript.strip()})
     await websocket.close()
@@ -1013,7 +1062,7 @@ async def api_stt_stream(websocket: WebSocket):
 
         step, integration = _ha_assist_step_integration(config, flow, "stt", HA_STT_BRIDGE_KINDS)
         if not integration:
-            raise _bridge_unavailable("STT", "Google Gemini, OpenAI Cloud, OpenAI Realtime, Deepgram, or Speechmatics")
+            raise _bridge_unavailable("STT", _ha_supported_stt_names())
         integration = _require_integration(integration, "STT", fields=())
         model = _step_model_for(step, integration, "stt", _ha_stt_model_fallback(integration))
         streaming_kind = _streaming_stt_kind(integration, model)
@@ -1080,14 +1129,17 @@ async def api_stt_stream(websocket: WebSocket):
             try:
                 transcript = await provider_task
             except Exception as err:
-                logger.warning(
-                    "Streaming STT failed for flow {}; falling back to buffered STT: {}",
-                    flow.id,
-                    err,
-                )
-                transcript = ""
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"{integration.name} streaming STT failed: {err}",
+                ) from err
 
         if not transcript:
+            if streaming_kind:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"{integration.name} streaming STT returned no transcript",
+                )
             result = await _transcribe_audio_bytes(
                 config=config,
                 flow=flow,
@@ -1162,6 +1214,262 @@ def _pop_tts_prefetch(
     return None
 
 
+def _local_runtime_url(integration: IntegrationConfig, suffix: str) -> str:
+    if integration.endpoint:
+        return integration.endpoint.strip()
+    if not integration.base_url:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{integration.name} is missing base_url or endpoint",
+        )
+    return urljoin(integration.base_url.rstrip("/") + "/", suffix.lstrip("/"))
+
+
+async def _local_runtime_transcribe(
+    *,
+    integration: IntegrationConfig,
+    audio: bytes,
+    content_type: str,
+    metadata: dict[str, Any],
+    model: str,
+) -> str:
+    headers = {
+        "Content-Type": content_type,
+        "X-Sample-Rate": str(_ws_metadata_value(metadata, "sample_rate", DEFAULT_HA_STT_SAMPLE_RATE)),
+        "X-Language": str(_ws_metadata_value(metadata, "language", integration.language or "en")),
+    }
+    if model:
+        headers["X-Model"] = model
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post(_local_runtime_url(integration, "stt"), content=audio, headers=headers)
+        response.raise_for_status()
+    media_type = response.headers.get("content-type", "")
+    if "json" in media_type:
+        data = response.json()
+        if isinstance(data, dict):
+            return str(data.get("text") or data.get("transcript") or data.get("result") or "").strip()
+    return response.text.strip()
+
+
+async def _local_runtime_tts(
+    *,
+    integration: IntegrationConfig,
+    text: str,
+    model: str,
+    voice: str,
+    language: str,
+    speed: float,
+) -> tuple[bytes, str, str]:
+    payload = {
+        "text": text,
+        "model": model,
+        "voice": voice,
+        "language": language,
+        "speed": speed,
+    }
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post(_local_runtime_url(integration, "tts"), json=payload)
+        response.raise_for_status()
+    media_type = response.headers.get("content-type", "audio/wav").split(";")[0]
+    if "json" not in media_type:
+        return response.content, media_type, _audio_extension_for_media_type(media_type)
+
+    data = response.json()
+    if not isinstance(data, dict):
+        raise RuntimeError("Local runtime TTS returned invalid JSON")
+    encoded = data.get("audio") or data.get("audio_base64") or data.get("audioContent")
+    if not encoded:
+        raise RuntimeError("Local runtime TTS JSON did not include audio")
+    audio = base64.b64decode(str(encoded))
+    declared_type = str(data.get("media_type") or data.get("mime_type") or "audio/wav")
+    return _normalize_inline_audio(audio, declared_type)
+
+
+def _google_tts_language_code(voice: str, language: str) -> str:
+    parts = [part for part in (voice or "").split("-") if part]
+    if len(parts) >= 2:
+        return f"{parts[0]}-{parts[1]}"
+    value = (language or "").replace("_", "-")
+    if value and value.lower() != "pipecat-assist":
+        language_parts = value.split("-")
+        if len(language_parts) >= 2:
+            return f"{language_parts[0]}-{language_parts[1].upper()}"
+        return f"{language_parts[0]}-{language_parts[0].upper()}"
+    return "en-US"
+
+
+async def _google_cloud_tts_audio(
+    *,
+    integration: IntegrationConfig,
+    text: str,
+    voice: str,
+    language: str,
+    speed: float,
+) -> tuple[bytes, str, str]:
+    from google.api_core.client_options import ClientOptions
+    from google.auth import default as google_auth_default
+    from google.cloud import texttospeech_v1
+    from google.oauth2 import service_account
+
+    credentials = None
+    if integration.credentials_json:
+        credentials = service_account.Credentials.from_service_account_info(
+            json.loads(integration.credentials_json)
+        )
+    elif integration.credentials_path:
+        credentials = service_account.Credentials.from_service_account_file(integration.credentials_path)
+    else:
+        credentials, _ = google_auth_default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+
+    client_options = None
+    if integration.location:
+        client_options = ClientOptions(api_endpoint=f"{integration.location}-texttospeech.googleapis.com")
+    client = texttospeech_v1.TextToSpeechAsyncClient(
+        credentials=credentials,
+        client_options=client_options,
+    )
+    sample_rate = 24000
+    voice_name = voice or DEFAULT_GOOGLE_TTS_VOICE
+    request = texttospeech_v1.SynthesizeSpeechRequest(
+        input=texttospeech_v1.SynthesisInput(text=text),
+        voice=texttospeech_v1.VoiceSelectionParams(
+            language_code=_google_tts_language_code(voice_name, language),
+            name=voice_name,
+        ),
+        audio_config=texttospeech_v1.AudioConfig(
+            audio_encoding=texttospeech_v1.AudioEncoding.LINEAR16,
+            sample_rate_hertz=sample_rate,
+            speaking_rate=speed,
+        ),
+    )
+    response = await client.synthesize_speech(request=request)
+    audio = response.audio_content
+    if audio.startswith(b"RIFF"):
+        return audio, "audio/wav", "wav"
+    return _wav_from_pcm(audio, sample_rate=sample_rate, sample_width=2, channels=1), "audio/wav", "wav"
+
+
+async def _cartesia_tts_audio(
+    *,
+    integration: IntegrationConfig,
+    text: str,
+    model: str,
+    voice: str,
+    language: str,
+    speed: float,
+) -> tuple[bytes, str, str]:
+    payload: dict[str, Any] = {
+        "model_id": model or DEFAULT_CARTESIA_MODEL,
+        "transcript": text,
+        "voice": {"mode": "id", "id": voice or DEFAULT_CARTESIA_VOICE},
+        "output_format": {
+            "container": "raw",
+            "encoding": "pcm_s16le",
+            "sample_rate": 24000,
+        },
+    }
+    if language:
+        payload["language"] = language.split("-", 1)[0].lower()
+    if speed and abs(speed - 1.0) > 0.001:
+        payload["generation_config"] = {"speed": speed}
+    headers = {
+        "Cartesia-Version": "2026-03-01",
+        "X-API-Key": _integration_api_key_or_400(integration, "TTS"),
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post(
+            (integration.endpoint or "https://api.cartesia.ai").rstrip("/") + "/tts/bytes",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+    if not response.content:
+        raise RuntimeError("Cartesia TTS returned no audio")
+    return _wav_from_pcm(response.content, sample_rate=24000, sample_width=2, channels=1), "audio/wav", "wav"
+
+
+async def _gradium_tts_audio(
+    *,
+    integration: IntegrationConfig,
+    text: str,
+    voice: str,
+) -> tuple[bytes, str, str]:
+    api_key = _integration_api_key_or_400(integration, "TTS")
+    context_id = f"ha-{hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]}"
+    url = integration.endpoint or "wss://api.gradium.ai/api/speech/tts"
+    headers = {"x-api-key": api_key, "x-api-source": "pipecat-assist"}
+    audio = bytearray()
+    async with _websocket_connect(url, headers) as provider_ws:
+        await provider_ws.send(
+            json.dumps(
+                {
+                    "type": "setup",
+                    "output_format": "pcm",
+                    "voice_id": voice or "_6Aslh2DxfmnRLmP",
+                    "close_ws_on_eos": False,
+                    "client_req_id": context_id,
+                }
+            )
+        )
+        await provider_ws.send(json.dumps({"type": "text", "text": text, "client_req_id": context_id}))
+        await provider_ws.send(json.dumps({"type": "end_of_stream", "client_req_id": context_id}))
+        async with asyncio.timeout(60):
+            async for raw in provider_ws:
+                message = json.loads(raw)
+                if message.get("type") == "audio" and message.get("client_req_id") == context_id:
+                    audio.extend(base64.b64decode(str(message.get("audio") or "")))
+                elif message.get("type") == "end_of_stream" and message.get("client_req_id") == context_id:
+                    break
+                elif message.get("type") == "error":
+                    raise RuntimeError(message.get("message") or "Gradium TTS failed")
+    if not audio:
+        raise RuntimeError("Gradium TTS returned no audio")
+    return _wav_from_pcm(bytes(audio), sample_rate=48000, sample_width=2, channels=1), "audio/wav", "wav"
+
+
+async def _soniox_tts_audio(
+    *,
+    integration: IntegrationConfig,
+    flow: FlowConfig,
+    text: str,
+    model: str,
+    voice: str,
+) -> tuple[bytes, str, str]:
+    api_key = _integration_api_key_or_400(integration, "TTS")
+    context_id = f"ha-{hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]}"
+    sample_rate = 24000
+    language = _normalize_language_hint(_runtime_language(flow, integration)) or "en"
+    config_msg = {
+        "api_key": api_key,
+        "stream_id": context_id,
+        "model": model or "tts-rt-v1",
+        "voice": voice or "Adrian",
+        "audio_format": "pcm_s16le",
+        "sample_rate": sample_rate,
+        "language": language,
+    }
+    audio = bytearray()
+    async with _websocket_connect(integration.endpoint or "wss://tts-rt.soniox.com/tts-websocket", {}) as provider_ws:
+        await provider_ws.send(json.dumps(config_msg))
+        await provider_ws.send(json.dumps({"text": text, "text_end": False, "stream_id": context_id}))
+        await provider_ws.send(json.dumps({"text": "", "text_end": True, "stream_id": context_id}))
+        async with asyncio.timeout(60):
+            async for raw in provider_ws:
+                message = json.loads(raw)
+                if message.get("error_code") is not None:
+                    raise RuntimeError(message.get("error_message") or "Soniox TTS failed")
+                if message.get("stream_id") != context_id:
+                    continue
+                if message.get("audio"):
+                    audio.extend(base64.b64decode(str(message.get("audio"))))
+                if message.get("terminated"):
+                    break
+    if not audio:
+        raise RuntimeError("Soniox TTS returned no audio")
+    return _wav_from_pcm(bytes(audio), sample_rate=sample_rate, sample_width=2, channels=1), "audio/wav", "wav"
+
+
 async def _synthesize_tts_audio(
     *,
     config: RuntimeConfig,
@@ -1172,21 +1480,13 @@ async def _synthesize_tts_audio(
     started_at = time.perf_counter()
     step, integration = _ha_assist_step_integration(config, flow, "tts", HA_TTS_BRIDGE_KINDS)
     if not integration:
-        raise _bridge_unavailable("TTS", "Google Gemini, OpenAI Cloud, OpenAI Realtime, or ElevenLabs")
+        raise _bridge_unavailable("TTS", _ha_supported_tts_names())
     integration = _require_integration(integration, "TTS", fields=())
-    if integration.kind in {"gemini", "gemini_cloud"}:
-        model_fallback = DEFAULT_GEMINI_TTS_MODEL
-        voice_fallback = DEFAULT_GEMINI_LIVE_VOICE
-    elif integration.kind == "elevenlabs":
-        model_fallback = DEFAULT_ELEVENLABS_MODEL
-        voice_fallback = DEFAULT_ELEVENLABS_VOICE
-    else:
-        model_fallback = DEFAULT_OPENAI_TTS_MODEL
-        voice_fallback = DEFAULT_OPENAI_TTS_VOICE
-
-    model = _step_model_for(step, integration, "tts", model_fallback)
-    voice = _step_voice(step, integration, voice_fallback)
+    model = _step_model_for(step, integration, "tts", _ha_tts_model_fallback(integration))
+    voice = _step_voice(step, integration, _ha_tts_voice_fallback(integration))
     response_format = _preferred_tts_format(payload)
+    language = _runtime_language(flow, integration, payload.get("language"))
+    speed = _runtime_speed(flow, integration)
     logger.info(
         "HA Assist TTS synth started flow={} integration={} kind={} model={} voice={} text={} requested_format={}",
         flow.id,
@@ -1208,7 +1508,7 @@ async def _synthesize_tts_audio(
                 voice=voice or DEFAULT_OPENAI_TTS_VOICE,
                 input=text,
                 response_format=response_format,
-                speed=_runtime_speed(flow, integration),
+                speed=speed,
             )
 
         result = await _provider_call(f"{integration.name} TTS", request_openai_tts)
@@ -1241,6 +1541,64 @@ async def _synthesize_tts_audio(
         )
         return audio
 
+    if integration.kind == "cartesia":
+        audio = await _provider_call(
+            "Cartesia TTS",
+            lambda: _cartesia_tts_audio(
+                integration=integration,
+                text=text,
+                model=model,
+                voice=voice,
+                language=language,
+                speed=speed,
+            ),
+        )
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model or DEFAULT_CARTESIA_MODEL,
+            voice or DEFAULT_CARTESIA_VOICE,
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return audio
+
+    if integration.kind == "gradium":
+        audio = await _provider_call(
+            "Gradium TTS",
+            lambda: _gradium_tts_audio(integration=integration, text=text, voice=voice),
+        )
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model or "default",
+            voice or "_6Aslh2DxfmnRLmP",
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return audio
+
+    if integration.kind in {"google_cloud_tts", "google_streaming_tts"}:
+        audio = await _provider_call(
+            f"{integration.name} TTS",
+            lambda: _google_cloud_tts_audio(
+                integration=integration,
+                text=text,
+                voice=voice,
+                language=language,
+                speed=speed,
+            ),
+        )
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model,
+            voice or DEFAULT_GOOGLE_TTS_VOICE,
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return audio
+
     if integration.kind == "elevenlabs":
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice or DEFAULT_ELEVENLABS_VOICE}"
         headers = {
@@ -1269,9 +1627,52 @@ async def _synthesize_tts_audio(
         )
         return response.content, "audio/mpeg", "mp3"
 
+    if integration.kind == "soniox":
+        audio = await _provider_call(
+            "Soniox TTS",
+            lambda: _soniox_tts_audio(
+                integration=integration,
+                flow=flow,
+                text=text,
+                model=model,
+                voice=voice,
+            ),
+        )
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model or "tts-rt-v1",
+            voice or "Adrian",
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return audio
+
+    if integration.kind == "local_runtime":
+        audio = await _provider_call(
+            "Local runtime TTS",
+            lambda: _local_runtime_tts(
+                integration=integration,
+                text=text,
+                model=model,
+                voice=voice,
+                language=language,
+                speed=speed,
+            ),
+        )
+        logger.info(
+            "HA Assist TTS synth finished flow={} integration={} model={} voice={} duration_ms={:.0f}",
+            flow.id,
+            integration.name,
+            model,
+            voice,
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return audio
+
     raise HTTPException(
         status_code=400,
-        detail=f"HA Assist TTS bridge does not support {integration.name}. Use Gemini, OpenAI Cloud, OpenAI Realtime, or ElevenLabs TTS.",
+        detail=f"HA Assist TTS bridge does not support {integration.name}. Use {_ha_supported_tts_names()}.",
     )
 
 
@@ -1389,8 +1790,10 @@ async def api_tts(payload: dict[str, Any]):
         try:
             live_audio = await _ha_live_tts_audio(live_turn)
         except Exception as err:
-            logger.warning("HA Assist Gemini Live TTS cache failed: {}", err)
-            live_audio = None
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini Live HA Assist TTS failed: {err}",
+            ) from err
         if live_audio:
             audio, media_type, extension = live_audio
             logger.info(
@@ -1403,6 +1806,7 @@ async def api_tts(payload: dict[str, Any]):
                 (time.perf_counter() - started_at) * 1000,
             )
             return Response(content=audio, media_type=media_type, headers={"X-Audio-Extension": extension})
+        raise HTTPException(status_code=502, detail="Gemini Live HA Assist TTS returned no audio")
 
     _prune_tts_prefetch()
     cached = _pop_tts_prefetch(flow.id, text, response_format)
@@ -1605,44 +2009,47 @@ def _ha_assist_step_integration(
     kind: str,
     supported_kinds: set[str],
 ) -> tuple[Any, IntegrationConfig | None]:
-    """Return the explicit HA Assist step integration or a compatible fallback."""
+    """Return the explicit HA Assist step integration without provider fallback."""
 
     step, integration = _step_integration(config, flow, kind)
-    if _configured_integration(integration) and integration.kind in supported_kinds:
-        return step, integration
-
-    preferred_ids = [
-        flow.provider_id,
-        "gemini",
-        "gemini-cloud",
-        "openai-cloud",
-        "openai",
-        "deepgram",
-        "elevenlabs",
-    ]
-    seen: set[str] = set()
-    for integration_id in preferred_ids:
-        if not integration_id or integration_id in seen:
-            continue
-        seen.add(integration_id)
-        candidate = config.integration(integration_id)
-        if _configured_integration(candidate) and candidate.kind in supported_kinds:
-            return None, candidate
-
-    for candidate in config.integrations:
-        if _configured_integration(candidate) and candidate.kind in supported_kinds:
-            return None, candidate
-    return step, None
+    if not step:
+        return None, None
+    if not integration:
+        return step, None
+    if integration.kind not in supported_kinds:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"HA Assist {kind.upper()} bridge cannot use {integration.name} "
+                f"({integration.kind}). Select a {kind.upper()} integration supported by HA Assist."
+            ),
+        )
+    return step, integration
 
 
 def _bridge_unavailable(role: str, supported_names: str) -> HTTPException:
     return HTTPException(
         status_code=400,
         detail=(
-            f"HA Assist {role} requires an enabled compatible integration. "
+            f"HA Assist {role} requires an enabled explicit {role} step. "
             f"Configure one of: {supported_names}. Gemini Live speech-to-speech "
             "pipelines are bridged automatically when Home Assistant sends mono 16-bit PCM audio."
         ),
+    )
+
+
+def _ha_supported_stt_names() -> str:
+    return (
+        "Soniox, Deepgram, Speechmatics, Gradium, OpenAI Cloud/Realtime, "
+        "Google Gemini Cloud, and Local runtime"
+    )
+
+
+def _ha_supported_tts_names() -> str:
+    return (
+        "Cartesia, Gradium, Google Cloud TTS, Google Cloud TTS Streaming, "
+        "ElevenLabs, OpenAI Cloud/Realtime, Google Gemini Cloud, Soniox, "
+        "and Local runtime"
     )
 
 
@@ -1651,6 +2058,10 @@ def _streaming_stt_kind(integration: IntegrationConfig | None, model: str) -> st
         return ""
     if integration.kind == "deepgram":
         return "deepgram"
+    if integration.kind == "gradium":
+        return "gradium"
+    if integration.kind == "soniox":
+        return "soniox"
     if integration.kind == "speechmatics":
         return "speechmatics"
     if integration.kind in {"openai", "openai_cloud"}:
@@ -1666,9 +2077,53 @@ def _ha_stt_model_fallback(integration: IntegrationConfig | None) -> str:
         return DEFAULT_OPENAI_STT_MODEL
     if integration.kind == "deepgram":
         return DEFAULT_DEEPGRAM_MODEL
+    if integration.kind == "soniox":
+        return integration.default_model or DEFAULT_SONIOX_MODEL
     if integration.kind == "speechmatics":
         return integration.default_model or DEFAULT_SPEECHMATICS_MODEL
     return integration.default_model or ""
+
+
+def _ha_tts_model_fallback(integration: IntegrationConfig | None) -> str:
+    if not integration:
+        return ""
+    if integration.kind in {"openai", "openai_cloud"}:
+        return DEFAULT_OPENAI_TTS_MODEL
+    if integration.kind in {"gemini", "gemini_cloud"}:
+        return DEFAULT_GEMINI_TTS_MODEL
+    if integration.kind == "cartesia":
+        return DEFAULT_CARTESIA_MODEL
+    if integration.kind == "elevenlabs":
+        return DEFAULT_ELEVENLABS_MODEL
+    if integration.kind == "google_cloud_tts":
+        return "google-tts"
+    if integration.kind == "google_streaming_tts":
+        return "google-streaming-tts"
+    if integration.kind == "gradium":
+        return integration.default_model or "default"
+    if integration.kind == "soniox":
+        return integration.default_tts_model or integration.default_model or "tts-rt-v1"
+    return integration.default_tts_model or integration.default_model or ""
+
+
+def _ha_tts_voice_fallback(integration: IntegrationConfig | None) -> str:
+    if not integration:
+        return ""
+    if integration.kind in {"openai", "openai_cloud"}:
+        return DEFAULT_OPENAI_TTS_VOICE
+    if integration.kind in {"gemini", "gemini_cloud"}:
+        return DEFAULT_GEMINI_LIVE_VOICE
+    if integration.kind == "cartesia":
+        return DEFAULT_CARTESIA_VOICE
+    if integration.kind == "elevenlabs":
+        return DEFAULT_ELEVENLABS_VOICE
+    if integration.kind in {"google_cloud_tts", "google_streaming_tts"}:
+        return DEFAULT_GOOGLE_TTS_VOICE
+    if integration.kind == "gradium":
+        return integration.default_voice or "_6Aslh2DxfmnRLmP"
+    if integration.kind == "soniox":
+        return integration.default_voice or "Adrian"
+    return integration.default_voice or ""
 
 
 def _openai_realtime_transcription_model(flow: FlowConfig, model: str) -> str:
@@ -2418,6 +2873,218 @@ async def _deepgram_transcribe_stream(
         return " ".join(final_parts).strip() or latest_partial.strip()
 
 
+def _gradium_input_format(sample_rate: int) -> tuple[str, int]:
+    if sample_rate in {8000, 16000, 24000}:
+        return f"pcm_{sample_rate}", sample_rate
+    return "pcm_16000", 16000
+
+
+def _normalize_stt_language(metadata: dict[str, Any], flow: FlowConfig, integration: IntegrationConfig) -> str:
+    return (
+        _normalize_language_hint(str(_ws_metadata_value(metadata, "language", "")))
+        or _normalize_language_hint(_runtime_language(flow, integration))
+        or "en"
+    )
+
+
+async def _soniox_transcribe_stream(
+    *,
+    websocket: WebSocket | None,
+    queue: "asyncio.Queue[bytes | None]",
+    integration: IntegrationConfig,
+    flow: FlowConfig,
+    model: str,
+    metadata: dict[str, Any],
+) -> str:
+    api_key = _integration_api_key(integration, "STT")
+    sample_rate = int(_ws_metadata_value(metadata, "sample_rate", DEFAULT_HA_STT_SAMPLE_RATE) or DEFAULT_HA_STT_SAMPLE_RATE)
+    channels = int(_ws_metadata_value(metadata, "channel", DEFAULT_HA_STT_CHANNELS) or DEFAULT_HA_STT_CHANNELS)
+    language = _normalize_stt_language(metadata, flow, integration)
+    config = {
+        "api_key": api_key,
+        "model": model or integration.default_model or DEFAULT_SONIOX_MODEL,
+        "audio_format": "pcm_s16le",
+        "num_channels": channels,
+        "enable_endpoint_detection": False,
+        "sample_rate": sample_rate,
+        "language_hints": [language] if language else None,
+    }
+    url = integration.endpoint or "wss://stt-rt.soniox.com/transcribe-websocket"
+    logger.info(
+        "HA Assist Soniox STT streaming started integration={} model={} language={} sample_rate={}",
+        integration.name,
+        config["model"],
+        language,
+        sample_rate,
+    )
+
+    async with _websocket_connect(url, {}) as provider_ws:
+        await provider_ws.send(json.dumps(config))
+
+        async def sender() -> None:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                payload = _pcm_stream_payload(chunk)
+                if payload:
+                    await provider_ws.send(payload)
+            await provider_ws.send(json.dumps({"type": "finalize"}))
+            await provider_ws.send("")
+
+        sender_task = asyncio.create_task(sender())
+        final_tokens: list[str] = []
+        latest_partial = ""
+        try:
+            async with asyncio.timeout(45):
+                async for raw in provider_ws:
+                    data = json.loads(raw)
+                    if data.get("error_code") or data.get("error_message"):
+                        raise RuntimeError(data.get("error_message") or data.get("error_code") or "Soniox STT failed")
+                    tokens = data.get("tokens") or []
+                    non_final_tokens: list[str] = []
+                    for token in tokens:
+                        text = str(token.get("text") or "")
+                        if token.get("is_final"):
+                            if text:
+                                final_tokens.append(text)
+                            else:
+                                transcript = "".join(final_tokens).strip()
+                                if transcript:
+                                    return transcript
+                        elif text:
+                            non_final_tokens.append(text)
+                    partial = ("".join(final_tokens) + "".join(non_final_tokens)).strip()
+                    if partial:
+                        latest_partial = partial
+                        if websocket:
+                            await _send_ws_json(websocket, {"type": "partial", "text": latest_partial})
+                    if data.get("finished"):
+                        break
+        finally:
+            sender_task.cancel()
+            with suppress(Exception):
+                await sender_task
+    return "".join(final_tokens).strip() or latest_partial.strip()
+
+
+async def _gradium_transcribe_stream(
+    *,
+    websocket: WebSocket | None,
+    queue: "asyncio.Queue[bytes | None]",
+    integration: IntegrationConfig,
+    flow: FlowConfig,
+    model: str,
+    metadata: dict[str, Any],
+) -> str:
+    api_key = _integration_api_key(integration, "STT")
+    source_rate = int(_ws_metadata_value(metadata, "sample_rate", DEFAULT_HA_STT_SAMPLE_RATE) or DEFAULT_HA_STT_SAMPLE_RATE)
+    channels = int(_ws_metadata_value(metadata, "channel", DEFAULT_HA_STT_CHANNELS) or DEFAULT_HA_STT_CHANNELS)
+    input_format, target_rate = _gradium_input_format(source_rate)
+    language = _normalize_stt_language(metadata, flow, integration)
+    headers = {"x-api-key": api_key, "x-api-source": "pipecat-assist"}
+    url = integration.endpoint or "wss://api.gradium.ai/api/speech/asr"
+    setup_msg: dict[str, Any] = {
+        "type": "setup",
+        "model_name": model or integration.default_model or "default",
+        "input_format": input_format,
+        "json_config": {"language": language, "delay_in_frames": 8},
+    }
+    logger.info(
+        "HA Assist Gradium STT streaming started integration={} model={} language={} source_rate={} target_rate={}",
+        integration.name,
+        setup_msg["model_name"],
+        language,
+        source_rate,
+        target_rate,
+    )
+
+    async with _websocket_connect(url, headers) as provider_ws:
+        await provider_ws.send(json.dumps(setup_msg))
+        ready = json.loads(await provider_ws.recv())
+        if ready.get("type") == "error":
+            raise RuntimeError(ready.get("message") or "Gradium STT setup failed")
+        if ready.get("type") != "ready":
+            raise RuntimeError(f"Gradium STT returned unexpected setup response: {ready.get('type')}")
+
+        async def sender() -> None:
+            resample_state = None
+            audio_buffer = bytearray()
+            chunk_size = int(80 * target_rate * 2 * channels / 1000)
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                payload = _pcm_stream_payload(chunk)
+                if not payload:
+                    continue
+                if source_rate != target_rate:
+                    try:
+                        import audioop
+                    except ModuleNotFoundError as err:
+                        raise RuntimeError("Gradium STT needs 8, 16, or 24 kHz PCM audio") from err
+                    payload, resample_state = audioop.ratecv(
+                        payload,
+                        2,
+                        channels,
+                        source_rate,
+                        target_rate,
+                        resample_state,
+                    )
+                audio_buffer.extend(payload)
+                while len(audio_buffer) >= chunk_size:
+                    frame = bytes(audio_buffer[:chunk_size])
+                    del audio_buffer[:chunk_size]
+                    await provider_ws.send(
+                        json.dumps(
+                            {
+                                "type": "audio",
+                                "audio": base64.b64encode(frame).decode("ascii"),
+                            }
+                        )
+                    )
+            if audio_buffer:
+                await provider_ws.send(
+                    json.dumps(
+                        {
+                            "type": "audio",
+                            "audio": base64.b64encode(bytes(audio_buffer)).decode("ascii"),
+                        }
+                    )
+                )
+            await provider_ws.send(json.dumps({"type": "flush", "flush_id": "final"}))
+
+        sender_task = asyncio.create_task(sender())
+        parts: list[str] = []
+        latest_partial = ""
+        flushed = False
+        try:
+            async with asyncio.timeout(45):
+                async for raw in provider_ws:
+                    data = json.loads(raw)
+                    message_type = str(data.get("type") or "")
+                    if message_type == "text":
+                        text = str(data.get("text") or "").strip()
+                        if text:
+                            parts.append(text)
+                            latest_partial = " ".join(parts).strip()
+                            if websocket:
+                                await _send_ws_json(websocket, {"type": "partial", "text": latest_partial})
+                    elif message_type == "flushed":
+                        flushed = True
+                        await asyncio.sleep(0.12)
+                        break
+                    elif message_type == "error":
+                        raise RuntimeError(data.get("message") or "Gradium STT failed")
+                    elif message_type == "end_of_stream" and flushed:
+                        break
+        finally:
+            sender_task.cancel()
+            with suppress(Exception):
+                await sender_task
+    return " ".join(parts).strip() or latest_partial.strip()
+
+
 def _speechmatics_transcript_text(data: dict[str, Any]) -> str:
     metadata = data.get("metadata") or {}
     transcript = str(metadata.get("transcript") or data.get("transcript") or "").strip()
@@ -2562,6 +3229,24 @@ async def _streaming_transcribe_audio(
             websocket=websocket,
             queue=queue,
             integration=integration,
+            model=model,
+            metadata=metadata,
+        )
+    if kind == "gradium":
+        return await _gradium_transcribe_stream(
+            websocket=websocket,
+            queue=queue,
+            integration=integration,
+            flow=flow,
+            model=model,
+            metadata=metadata,
+        )
+    if kind == "soniox":
+        return await _soniox_transcribe_stream(
+            websocket=websocket,
+            queue=queue,
+            integration=integration,
+            flow=flow,
             model=model,
             metadata=metadata,
         )

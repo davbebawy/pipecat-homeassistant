@@ -40,12 +40,11 @@ MCP. The default Flow remains pass-through until enabled.
 `Integrations`
 : Configure cloud providers and local AI endpoints, including Gemini, OpenAI,
 Soniox, Deepgram, Cartesia, Gradium, Speechmatics, AWS, ElevenLabs, Google
-Cloud TTS HTTP fallback, Google Cloud TTS Streaming, Azure/OpenAI-compatible
-APIs, Ollama, local runtimes, Web Search, and Home Assistant MCP. Google Cloud
-TTS HTTP is labeled as a fallback because it does not provide the same
-streaming latency profile as Google Cloud TTS Streaming. Home Assistant MCP
-shows Automatic, Manual, or Error state and contains the MCP test/reset
-controls.
+Cloud TTS HTTP, Google Cloud TTS Streaming, Azure/OpenAI-compatible APIs,
+Ollama, local runtimes, Web Search, and Home Assistant MCP. Google Cloud TTS
+HTTP is a normal one-shot synthesis option with a higher latency profile than
+Google Cloud TTS Streaming. Home Assistant MCP shows Automatic, Manual, or
+Error state and contains the MCP test/reset controls.
 
 OpenAI is split intentionally: **OpenAI Realtime** is for native
 speech-to-speech pipelines, while **OpenAI Cloud** is for composed pipelines
@@ -182,7 +181,7 @@ resource and then add a manual card:
 ```yaml
 lovelace:
   resources:
-    - url: /pipecat_assist/pipecat-assist-card.js?v=0.1.54
+    - url: /pipecat_assist/pipecat-assist-card.js?v=0.1.55
       type: module
 ```
 

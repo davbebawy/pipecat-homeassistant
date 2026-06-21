@@ -231,7 +231,7 @@ const providerKinds = [
   ["openai_cloud", "OpenAI Cloud", Cloud],
   ["gemini", "Google Gemini Live", Radio],
   ["gemini_cloud", "Google Gemini Cloud", Cloud],
-  ["google_cloud_tts", "Google Cloud TTS HTTP fallback", Cloud],
+  ["google_cloud_tts", "Google Cloud TTS HTTP", Cloud],
   ["google_streaming_tts", "Google Cloud TTS Streaming", Radio],
   ["soniox", "Soniox", Cloud],
   ["deepgram", "Deepgram", Cloud],
@@ -268,7 +268,7 @@ const languageIntegrationKinds = [
 
 const speedIntegrationKinds = ["openai", "openai_cloud", "google_cloud_tts", "elevenlabs"];
 const ttsStreamingIntegrationKinds = ["cartesia", "soniox", "gradium", "google_streaming_tts"];
-const webSearchProviderKinds = ["openai_cloud", "gemini_cloud", "openai_compatible"];
+const webSearchProviderKinds = ["openai_cloud", "gemini_cloud"];
 
 const stepTypes = [
   ["transport", "Transport", Radio, "neutral"],
@@ -286,9 +286,9 @@ const stepTypes = [
 const addableStepTypes = stepTypes.filter(([kind]) => !["transport", "output"].includes(kind));
 
 const stepProviders = {
-  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud"],
-  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "openai_compatible", "ollama"],
-  tts: ["cartesia", "gradium", "google_cloud_tts", "google_streaming_tts", "elevenlabs", "openai_cloud", "soniox"],
+  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud", "openai", "gemini_cloud", "gemini", "local_runtime"],
+  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "anthropic", "azure_openai", "openai_compatible", "ollama"],
+  tts: ["cartesia", "gradium", "google_cloud_tts", "google_streaming_tts", "elevenlabs", "openai_cloud", "openai", "gemini_cloud", "gemini", "soniox", "local_runtime"],
   tools: ["home_assistant_mcp"],
   web_search: ["web_search"],
   output: ["gemini", "openai", "aws_nova_sonic"],
@@ -4342,7 +4342,7 @@ function VoiceTest({ config, flow }) {
               version: "1.4.0",
                 about: {
                   library: "pipecat-assist-ui",
-                  library_version: "0.1.54",
+                  library_version: "0.1.55",
                   platform: "browser",
                 },
             },

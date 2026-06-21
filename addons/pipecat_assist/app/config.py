@@ -234,7 +234,7 @@ def default_integrations() -> list[IntegrationConfig]:
         ),
         IntegrationConfig(
             id="google-cloud-tts",
-            name="Google Cloud TTS HTTP fallback",
+            name="Google Cloud TTS HTTP",
             kind="google_cloud_tts",
             enabled=bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS")),
             credentials_path=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
@@ -1139,8 +1139,8 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
 
     google_tts = config.integration("google-cloud-tts")
     if google_tts:
-        if google_tts.name in {"Google Cloud TTS", "Google Cloud TTS HTTP"}:
-            google_tts.name = "Google Cloud TTS HTTP fallback"
+        if google_tts.name in {"Google Cloud TTS", "Google Cloud TTS HTTP fallback"}:
+            google_tts.name = "Google Cloud TTS HTTP"
             changed = True
         if not google_tts.default_voice:
             google_tts.default_voice = os.getenv("GOOGLE_TTS_VOICE", DEFAULT_GOOGLE_TTS_VOICE)
