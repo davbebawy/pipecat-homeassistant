@@ -24,7 +24,16 @@ DEFAULT_INSTRUCTIONS = (
 DEFAULT_GEMINI_TEXT_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_LIVE_MODEL = "models/gemini-3.1-flash-live-preview"
 DEFAULT_GEMINI_LIVE_VOICE = "Charon"
-DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+DEFAULT_GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+LEGACY_GEMINI_TTS_MODELS = {
+    "gemini-2.5-flash-preview-tts",
+    "models/gemini-2.5-flash-preview-tts",
+}
+GEMINI_TTS_FALLBACK_MODELS = (
+    DEFAULT_GEMINI_TTS_MODEL,
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts",
+)
 DEFAULT_OPENAI_TEXT_MODEL = "gpt-5.4-mini"
 DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime-2"
 DEFAULT_OPENAI_REALTIME_VOICE = "marin"
@@ -495,7 +504,7 @@ class FlowConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Persisted runtime configuration edited by the web UI."""
 
-    version: int = 16
+    version: int = 17
     openai_api_key: str = ""
     text_model: str = DEFAULT_GEMINI_TEXT_MODEL
     ha_mcp_url: str = ""
@@ -796,6 +805,10 @@ def _is_legacy_gemini_text_model(model: str | None) -> bool:
     return _clean_model_name(model) in LEGACY_GEMINI_TEXT_MODELS
 
 
+def _is_legacy_gemini_tts_model(model: str | None) -> bool:
+    return _clean_model_name(model) in LEGACY_GEMINI_TTS_MODELS
+
+
 def _looks_like_provider_mismatch(provider_kind: str, model: str | None) -> bool:
     clean = _clean_model_name(model).removeprefix("models/")
     if not clean:
@@ -1052,6 +1065,9 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
         if not _is_voice_for_provider("gemini", gemini.default_voice):
             gemini.default_voice = os.getenv("GEMINI_LIVE_VOICE", DEFAULT_GEMINI_LIVE_VOICE)
             changed = True
+        if not gemini.default_tts_model or _is_legacy_gemini_tts_model(gemini.default_tts_model):
+            gemini.default_tts_model = os.getenv("GEMINI_TTS_MODEL", DEFAULT_GEMINI_TTS_MODEL)
+            changed = True
 
     gemini_cloud = config.integration("gemini-cloud")
     if gemini_cloud:
@@ -1070,6 +1086,9 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
             changed = True
         if gemini_cloud.default_voice:
             gemini_cloud.default_voice = ""
+            changed = True
+        if not gemini_cloud.default_tts_model or _is_legacy_gemini_tts_model(gemini_cloud.default_tts_model):
+            gemini_cloud.default_tts_model = os.getenv("GEMINI_TTS_MODEL", DEFAULT_GEMINI_TTS_MODEL)
             changed = True
 
     openai = config.integration("openai")
@@ -1364,6 +1383,11 @@ class ConfigStore:
         if config.version < 16:
             config.version = 16
             changed = _repair_text_model_defaults(config) or changed
+            changed = True
+
+        if config.version < 17:
+            config.version = 17
+            changed = _repair_provider_defaults(config) or changed
             changed = True
 
         for flow in config.flows:

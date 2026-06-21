@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.42
+
+- Updated the default Gemini TTS model to `gemini-3.1-flash-tts-preview`
+  and migrate saved default Gemini TTS settings to the current model.
+- Added Gemini TTS retry and model fallback handling so HA Assist TTS prefetch
+  does not fall back to a second slow on-demand synthesis after transient
+  `Gemini did not return audio` responses.
+
 ## 0.1.41
 
 - Added a WebSocket-based Home Assistant STT bridge so HA Assist microphone

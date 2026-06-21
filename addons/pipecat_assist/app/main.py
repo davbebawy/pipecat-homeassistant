@@ -58,6 +58,7 @@ from app.config import (
     DEFAULT_GEMINI_LIVE_VOICE,
     DEFAULT_GEMINI_TEXT_MODEL,
     DEFAULT_GEMINI_TTS_MODEL,
+    GEMINI_TTS_FALLBACK_MODELS,
     DEFAULT_GOOGLE_TTS_VOICE,
     DEFAULT_OPENAI_TEXT_MODEL,
     DEFAULT_OPENAI_REALTIME_MODEL,
@@ -342,6 +343,38 @@ def _gemini_inline_audio(data: dict[str, Any]) -> tuple[bytes, str]:
             if encoded:
                 return base64.b64decode(encoded), str(inline.get("mimeType") or inline.get("mime_type") or "audio/wav")
     raise HTTPException(status_code=502, detail="Gemini did not return audio")
+
+
+def _gemini_tts_model_candidates(model: str, integration: IntegrationConfig) -> list[str]:
+    fallback_models = {item.removeprefix("models/") for item in GEMINI_TTS_FALLBACK_MODELS}
+    custom_candidates = []
+    for candidate in (model, integration.default_tts_model):
+        clean = (candidate or "").strip()
+        if clean and clean.removeprefix("models/") not in fallback_models:
+            custom_candidates.append(clean)
+    candidates = [*custom_candidates, DEFAULT_GEMINI_TTS_MODEL, *GEMINI_TTS_FALLBACK_MODELS]
+    seen: set[str] = set()
+    values: list[str] = []
+    for candidate in candidates:
+        clean = (candidate or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        values.append(clean)
+    return values
+
+
+def _gemini_no_audio_reason(data: dict[str, Any]) -> str:
+    reasons: list[str] = []
+    for candidate in data.get("candidates") or []:
+        reason = str(candidate.get("finishReason") or candidate.get("finish_reason") or "").strip()
+        if reason:
+            reasons.append(reason)
+    prompt_feedback = data.get("promptFeedback") or data.get("prompt_feedback") or {}
+    block_reason = str(prompt_feedback.get("blockReason") or prompt_feedback.get("block_reason") or "").strip()
+    if block_reason:
+        reasons.append(f"prompt blocked: {block_reason}")
+    return ", ".join(dict.fromkeys(reasons))
 
 
 def _audio_extension_for_media_type(media_type: str) -> str:
@@ -911,25 +944,13 @@ async def _synthesize_tts_audio(
 
     if integration.kind in {"gemini", "gemini_cloud"}:
         api_key = _integration_api_key_or_400(integration, "TTS", os.getenv("GOOGLE_API_KEY", ""))
-        data = await _gemini_generate_content(
-            api_key,
-            integration.default_tts_model or DEFAULT_GEMINI_TTS_MODEL,
-            {
-                "contents": [{"role": "user", "parts": [{"text": text}]}],
-                "generationConfig": {
-                    "responseModalities": ["AUDIO"],
-                    "speechConfig": {
-                        "voiceConfig": {
-                            "prebuiltVoiceConfig": {
-                                "voiceName": voice or integration.default_voice or DEFAULT_GEMINI_LIVE_VOICE,
-                            }
-                        }
-                    },
-                },
-            },
+        return await _synthesize_gemini_tts_audio(
+            api_key=api_key,
+            integration=integration,
+            model=model,
+            text=text,
+            voice=voice,
         )
-        audio, media_type, extension = _normalize_inline_audio(*_gemini_inline_audio(data))
-        return audio, media_type, extension
 
     if integration.kind == "elevenlabs":
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice or DEFAULT_ELEVENLABS_VOICE}"
@@ -984,6 +1005,57 @@ def _start_tts_prefetch(
     task = asyncio.create_task(runner())
     task.add_done_callback(lambda item: item.exception() if not item.cancelled() else None)
     TTS_PREFETCH[key] = (time.time(), task)
+
+
+async def _synthesize_gemini_tts_audio(
+    *,
+    api_key: str,
+    integration: IntegrationConfig,
+    model: str,
+    text: str,
+    voice: str,
+) -> tuple[bytes, str, str]:
+    payload = {
+        "contents": [{"parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": voice or integration.default_voice or DEFAULT_GEMINI_LIVE_VOICE,
+                    }
+                }
+            },
+        },
+    }
+    last_error: HTTPException | None = None
+    for candidate in _gemini_tts_model_candidates(model, integration):
+        for attempt in range(2):
+            data: dict[str, Any] | None = None
+            try:
+                data = await _gemini_generate_content(api_key, candidate, payload)
+                return _normalize_inline_audio(*_gemini_inline_audio(data))
+            except HTTPException as err:
+                if err.status_code in {401, 403}:
+                    raise
+                reason = ""
+                if err.status_code == 502 and data is not None:
+                    reason = _gemini_no_audio_reason(data)
+                detail = f"{err.detail}{f' ({reason})' if reason else ''}"
+                last_error = HTTPException(status_code=err.status_code, detail=detail)
+                logger.debug(
+                    "Gemini TTS model {} attempt {}/2 failed: {}",
+                    candidate,
+                    attempt + 1,
+                    detail,
+                )
+                if err.status_code == 502 and data is not None and attempt == 0:
+                    await asyncio.sleep(0.2)
+                    continue
+                break
+    if last_error:
+        raise last_error
+    raise HTTPException(status_code=502, detail="Gemini TTS could not select a model")
 
 
 @app.post("/api/assist/tts")
