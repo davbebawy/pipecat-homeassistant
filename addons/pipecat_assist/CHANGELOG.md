@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.45
+
+- Added a Gemini Live turn bridge for Home Assistant Assist audio sessions.
+  When the active pipeline is Gemini Live and Home Assistant sends mono 16-bit
+  PCM audio, STT starts a Gemini Live turn and caches the resulting transcript,
+  assistant text, and Live audio for the following Conversation and TTS calls.
+- Added Gemini Live MCP tool-call forwarding in the HA Assist bridge so smart
+  home requests can still use Home Assistant MCP instead of dropping to a
+  tool-less audio-only path.
+- HA Assist TTS now reuses Gemini Live audio for bridged turns instead of
+  synthesizing a second response through Gemini Cloud TTS.
+- The Home Assistant STT entity now advertises WAV/PCM only, so HA Assist
+  consistently provides a stream format that can be forwarded to Live APIs.
+
 ## 0.1.44
 
 - Fixed provider-specific default TTS voices so Gemini Cloud uses the Gemini

@@ -201,13 +201,13 @@ class PipecatAssistSpeechToTextEntity(stt.SpeechToTextEntity):
     def supported_formats(self) -> list[stt.AudioFormats]:
         """Return supported audio formats."""
 
-        return [stt.AudioFormats.WAV, stt.AudioFormats.OGG]
+        return [stt.AudioFormats.WAV]
 
     @property
     def supported_codecs(self) -> list[stt.AudioCodecs]:
         """Return supported audio codecs."""
 
-        return [stt.AudioCodecs.PCM, stt.AudioCodecs.OPUS]
+        return [stt.AudioCodecs.PCM]
 
     @property
     def supported_bit_rates(self) -> list[stt.AudioBitRates]:

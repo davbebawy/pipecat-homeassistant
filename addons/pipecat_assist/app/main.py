@@ -12,6 +12,7 @@ import os
 import time
 import wave
 from contextlib import suppress
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,30 @@ HA_TTS_BRIDGE_KINDS = {"elevenlabs", "gemini", "gemini_cloud", "openai", "openai
 PROVIDER_RETRY_STATUSES = {429, 500, 502, 503, 504}
 TTS_PREFETCH_TTL_SECONDS = 90
 TTS_PREFETCH: dict[tuple[str, str, str], tuple[float, Any]] = {}
+HA_LIVE_TURN_TTL_SECONDS = 120
+HA_LIVE_TRANSCRIPT_TIMEOUT_SECONDS = 30
+HA_LIVE_RESULT_TIMEOUT_SECONDS = 75
+HA_LIVE_TURNS_BY_TRANSCRIPT: dict[tuple[str, str], "HALiveTurn"] = {}
+HA_LIVE_TURNS_BY_SPEECH: dict[tuple[str, str], "HALiveTurn"] = {}
+
+
+@dataclass
+class HALiveTurn:
+    flow_id: str
+    provider: str
+    started_at: float = field(default_factory=time.time)
+    transcript: str = ""
+    speech: str = ""
+    audio_chunks: list[bytes] = field(default_factory=list)
+    audio_sample_rate: int = 24000
+    transcript_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    error: str = ""
+    task: asyncio.Task | None = None
+
+    @property
+    def audio(self) -> bytes:
+        return b"".join(self.audio_chunks)
 
 app.mount("/assets", StaticFiles(directory=UI_DIR), name="assets")
 
@@ -202,6 +227,48 @@ def _pcm_stream_payload(chunk: bytes) -> bytes:
         if data_index >= 0 and len(chunk) >= data_index + 8:
             return chunk[data_index + 8 :]
     return chunk
+
+
+def _normalized_turn_text(text: str) -> str:
+    return " ".join((text or "").strip().lower().split())
+
+
+def _ha_live_turn_key(flow_id: str, text: str) -> tuple[str, str]:
+    return flow_id, _normalized_turn_text(text)
+
+
+def _prune_ha_live_turns() -> None:
+    now = time.time()
+    for table in (HA_LIVE_TURNS_BY_TRANSCRIPT, HA_LIVE_TURNS_BY_SPEECH):
+        for key, turn in list(table.items()):
+            if now - turn.started_at > HA_LIVE_TURN_TTL_SECONDS:
+                table.pop(key, None)
+
+
+def _remember_ha_live_transcript(turn: HALiveTurn) -> None:
+    transcript = turn.transcript.strip()
+    if not transcript:
+        return
+    _prune_ha_live_turns()
+    HA_LIVE_TURNS_BY_TRANSCRIPT[_ha_live_turn_key(turn.flow_id, transcript)] = turn
+
+
+def _remember_ha_live_speech(turn: HALiveTurn) -> None:
+    speech = turn.speech.strip()
+    if not speech:
+        return
+    _prune_ha_live_turns()
+    HA_LIVE_TURNS_BY_SPEECH[_ha_live_turn_key(turn.flow_id, speech)] = turn
+
+
+def _find_ha_live_turn_by_transcript(flow_id: str, text: str) -> HALiveTurn | None:
+    _prune_ha_live_turns()
+    return HA_LIVE_TURNS_BY_TRANSCRIPT.get(_ha_live_turn_key(flow_id, text))
+
+
+def _find_ha_live_turn_by_speech(flow_id: str, text: str) -> HALiveTurn | None:
+    _prune_ha_live_turns()
+    return HA_LIVE_TURNS_BY_SPEECH.get(_ha_live_turn_key(flow_id, text))
 
 
 def _ws_metadata_value(metadata: dict[str, Any], key: str, default: Any) -> Any:
@@ -652,6 +719,26 @@ async def api_conversation(payload: dict[str, Any]):
         raise HTTPException(status_code=400, detail="text is required")
     config = STORE.load()
     flow = config.selected_flow(payload.get("flow_id"))
+    live_turn = _find_ha_live_turn_by_transcript(flow.id, text)
+    if live_turn:
+        try:
+            live_result = await _ha_live_conversation_result(
+                live_turn,
+                conversation_id=payload.get("conversation_id"),
+            )
+        except Exception as err:
+            logger.warning("HA Assist Gemini Live conversation cache failed: {}", err)
+            live_result = None
+        if live_result:
+            logger.info(
+                "HA Assist conversation served from Gemini Live flow={} input={} speech={} total_ms={:.0f}",
+                flow.id,
+                _text_fingerprint(text),
+                _text_fingerprint(str(live_result.get("speech") or "")),
+                (time.perf_counter() - started_at) * 1000,
+            )
+            return live_result
+
     async def request():
         result = await run_text_conversation(
             config,
@@ -795,6 +882,69 @@ async def api_stt(request: Request, flow_id: str | None = None):
     )
 
 
+async def _handle_ha_live_stt_stream(
+    *,
+    websocket: WebSocket,
+    config: RuntimeConfig,
+    flow: FlowConfig,
+    integration: IntegrationConfig,
+    metadata: dict[str, Any],
+    content_type: str,
+) -> None:
+    turn, live_queue = _start_gemini_live_ha_turn(
+        config=config,
+        flow=flow,
+        integration=integration,
+        websocket=websocket,
+        input_sample_rate=int(
+            _ws_metadata_value(metadata, "sample_rate", DEFAULT_HA_STT_SAMPLE_RATE)
+            or DEFAULT_HA_STT_SAMPLE_RATE
+        ),
+    )
+    chunks: list[bytes] = []
+    await websocket.send_json({"type": "ready", "mode": "live", "provider": "gemini"})
+    try:
+        while True:
+            message = await websocket.receive()
+            message_type = message.get("type")
+            if message_type == "websocket.disconnect":
+                raise WebSocketDisconnect()
+            if data := message.get("bytes"):
+                chunks.append(data)
+                await live_queue.put(data)
+                continue
+            raw_text = message.get("text")
+            if not raw_text:
+                continue
+            try:
+                event = json.loads(raw_text)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "end":
+                break
+    finally:
+        with suppress(Exception):
+            await live_queue.put(None)
+
+    transcript = await _wait_for_ha_live_transcript(turn)
+    if not transcript:
+        logger.warning(
+            "Gemini Live HA Assist did not return a transcript for flow {}; falling back to buffered STT",
+            flow.id,
+        )
+        result = await _transcribe_audio_bytes(
+            config=config,
+            flow=flow,
+            audio=b"".join(chunks),
+            metadata=metadata,
+            content_type=content_type,
+        )
+        transcript = result.get("text", "")
+
+    await websocket.send_json({"type": "final", "text": transcript.strip()})
+    await websocket.close()
+
+
 @app.websocket("/api/assist/stt/stream")
 async def api_stt_stream(websocket: WebSocket):
     """Streaming STT bridge for the classic Home Assistant Assist pipeline."""
@@ -818,6 +968,19 @@ async def api_stt_stream(websocket: WebSocket):
         flow = config.selected_flow(start.get("flow_id"))
         metadata = _stt_metadata_from_start(start)
         content_type = str(start.get("content_type") or "audio/wav")
+        live_integration = _ha_live_bridge_integration(config, flow, metadata)
+        if live_integration:
+            logger.info("HA Assist STT using Gemini Live bridge for flow {}", flow.id)
+            await _handle_ha_live_stt_stream(
+                websocket=websocket,
+                config=config,
+                flow=flow,
+                integration=live_integration,
+                metadata=metadata,
+                content_type=content_type,
+            )
+            return
+
         step, integration = _ha_assist_step_integration(config, flow, "stt", HA_STT_BRIDGE_KINDS)
         if not integration:
             raise _bridge_unavailable("STT", "Google Gemini, OpenAI Cloud, OpenAI Realtime, or Deepgram")
@@ -1069,6 +1232,8 @@ def _start_tts_prefetch(
     text = text.strip()
     if not text:
         return
+    if _find_ha_live_turn_by_speech(flow.id, text):
+        return
     _prune_tts_prefetch()
     payload = {
         "text": text,
@@ -1166,6 +1331,26 @@ async def api_tts(payload: dict[str, Any]):
         raise HTTPException(status_code=400, detail="No text was provided")
 
     response_format = _preferred_tts_format(payload)
+    live_turn = _find_ha_live_turn_by_speech(flow.id, text)
+    if live_turn:
+        try:
+            live_audio = await _ha_live_tts_audio(live_turn)
+        except Exception as err:
+            logger.warning("HA Assist Gemini Live TTS cache failed: {}", err)
+            live_audio = None
+        if live_audio:
+            audio, media_type, extension = live_audio
+            logger.info(
+                "HA Assist TTS served from Gemini Live flow={} text={} requested_format={} output={} bytes={} total_ms={:.0f}",
+                flow.id,
+                _text_fingerprint(text),
+                response_format,
+                extension,
+                len(audio),
+                (time.perf_counter() - started_at) * 1000,
+            )
+            return Response(content=audio, media_type=media_type, headers={"X-Audio-Extension": extension})
+
     _prune_tts_prefetch()
     cached = _pop_tts_prefetch(flow.id, text, response_format)
     cache_status = "miss"
@@ -1383,8 +1568,8 @@ def _bridge_unavailable(role: str, supported_names: str) -> HTTPException:
         status_code=400,
         detail=(
             f"HA Assist {role} requires an enabled compatible integration. "
-            f"Configure one of: {supported_names}. Speech-to-speech pipelines "
-            "such as Gemini Live do not expose separate STT/TTS steps to classic HA Assist."
+            f"Configure one of: {supported_names}. Gemini Live speech-to-speech "
+            "pipelines are bridged automatically when Home Assistant sends mono 16-bit PCM audio."
         ),
     )
 
@@ -1431,6 +1616,441 @@ def _websocket_connect(url: str, headers: dict[str, str]):
 async def _send_ws_json(websocket: WebSocket, payload: dict[str, Any]) -> None:
     with suppress(Exception):
         await websocket.send_json(payload)
+
+
+def _ha_live_bridge_integration(
+    config: RuntimeConfig,
+    flow: FlowConfig,
+    metadata: dict[str, Any],
+) -> IntegrationConfig | None:
+    """Return Gemini Live when the active pipeline can be wrapped for HA Assist."""
+
+    integration = config.model_integration(flow)
+    provider_kind = integration.kind if integration else flow.provider_id
+    if _runtime_mode(flow, provider_kind) != "s2s" or provider_kind != "gemini":
+        return None
+    if not _configured_integration(integration):
+        return None
+    if not ((integration.api_key if integration else "") or os.getenv("GOOGLE_API_KEY", "")):
+        return None
+
+    codec = str(_ws_metadata_value(metadata, "codec", "pcm") or "pcm").lower()
+    sample_rate = int(
+        _ws_metadata_value(metadata, "sample_rate", DEFAULT_HA_STT_SAMPLE_RATE)
+        or DEFAULT_HA_STT_SAMPLE_RATE
+    )
+    bit_rate = int(
+        _ws_metadata_value(metadata, "bit_rate", DEFAULT_HA_STT_SAMPLE_WIDTH * 8)
+        or DEFAULT_HA_STT_SAMPLE_WIDTH * 8
+    )
+    channels = int(_ws_metadata_value(metadata, "channel", DEFAULT_HA_STT_CHANNELS) or DEFAULT_HA_STT_CHANNELS)
+    if bit_rate != 16 or channels != 1 or "pcm" not in codec:
+        logger.info(
+            "Skipping Gemini Live HA Assist bridge for flow {} because HA audio is {} Hz, {} bit, {} channel, codec={}",
+            flow.id,
+            sample_rate,
+            bit_rate,
+            channels,
+            codec,
+        )
+        return None
+    return integration
+
+
+def _gemini_live_ha_setup(
+    config: RuntimeConfig,
+    flow: FlowConfig,
+    integration: IntegrationConfig,
+    tools_schema: ToolsSchema | None,
+) -> dict[str, Any]:
+    setup: dict[str, Any] = {
+        "model": _gemini_model(_model_name(flow, integration, "gemini")),
+        "responseModalities": ["AUDIO"],
+        "systemInstruction": {
+            "parts": [
+                {
+                    "text": (
+                        f"{_effective_instructions(flow)}\n\n"
+                        "You are running inside Home Assistant Assist through a Gemini Live bridge. "
+                        "Use Home Assistant tools silently for explicit smart-home requests, "
+                        "then answer briefly and naturally."
+                    )
+                }
+            ]
+        },
+        "inputAudioTranscription": {},
+        "outputAudioTranscription": {},
+        "speechConfig": {
+            "voiceConfig": {
+                "prebuiltVoiceConfig": {
+                    "voiceName": _gemini_voice(flow, integration),
+                }
+            }
+        },
+        "realtimeInputConfig": {
+            "automaticActivityDetection": {
+                "disabled": True,
+            }
+        },
+    }
+    if flow.max_output_tokens:
+        setup["maxOutputTokens"] = flow.max_output_tokens
+    if flow.reasoning_effort:
+        setup["thinkingConfig"] = {
+            "thinkingLevel": "high" if flow.reasoning_effort == "xhigh" else flow.reasoning_effort
+        }
+    if tools_schema and tools_schema.standard_tools:
+        setup["tools"] = [_gemini_live_tool_declarations(tools_schema)]
+    return setup
+
+
+def _gemini_live_tool_declarations(tools_schema: ToolsSchema) -> dict[str, Any]:
+    declarations: list[dict[str, Any]] = []
+    for tool in tools_schema.standard_tools:
+        declarations.append(
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": tool.properties,
+                    "required": tool.required,
+                },
+            }
+        )
+    return {"functionDeclarations": declarations}
+
+
+class _LocalFunctionParams:
+    def __init__(self, arguments: dict[str, Any]):
+        self.arguments = arguments
+        self.result = ""
+
+    async def result_callback(self, result: Any) -> None:
+        self.result = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+
+
+async def _call_local_live_tool(schema: FunctionSchema, arguments: dict[str, Any]) -> str:
+    handler = getattr(schema, "handler", None)
+    if not handler:
+        return "Tool has no local handler."
+    params = _LocalFunctionParams(arguments)
+    await handler(params)
+    return params.result or "Tool completed."
+
+
+async def _call_gemini_live_tool(
+    *,
+    function_call: dict[str, Any],
+    bridge: HomeAssistantMCPBridge | None,
+    local_tools: dict[str, FunctionSchema],
+    mcp_tool_names: set[str],
+) -> dict[str, Any]:
+    name = str(function_call.get("name") or "")
+    call_id = str(function_call.get("id") or "")
+    args = function_call.get("args")
+    arguments = args if isinstance(args, dict) else {}
+    try:
+        if name in local_tools:
+            result = await _call_local_live_tool(local_tools[name], arguments)
+        elif bridge and name in mcp_tool_names:
+            result = await bridge.call_tool(name, arguments)
+        else:
+            result = f"Unknown tool: {name}"
+        return {"id": call_id, "name": name, "response": {"result": result}}
+    except Exception as err:
+        logger.warning("Gemini Live HA Assist tool {} failed: {}", name, err)
+        return {"id": call_id, "name": name, "response": {"error": str(err)}}
+
+
+def _gemini_live_error_message(message: dict[str, Any]) -> str:
+    error = message.get("error") if isinstance(message, dict) else None
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("status") or error)
+    return str(error or "")
+
+
+def _append_gemini_live_text(existing: str, chunk: str) -> str:
+    if not chunk:
+        return existing
+    if not existing:
+        return chunk
+    if chunk.startswith(existing):
+        return chunk
+    if existing.endswith(chunk):
+        return existing
+    if existing.endswith((" ", "\n")) or chunk.startswith((" ", "\n", ".", ",", "!", "?", ":", ";")):
+        return f"{existing}{chunk}"
+    if len(chunk) > 2 and existing[-1].isalnum() and chunk[0].isalnum():
+        return f"{existing} {chunk}"
+    return f"{existing}{chunk}"
+
+
+async def _handle_gemini_live_message(
+    *,
+    websocket: WebSocket | None,
+    provider_ws,
+    message: dict[str, Any],
+    turn: HALiveTurn,
+    bridge: HomeAssistantMCPBridge | None,
+    local_tools: dict[str, FunctionSchema],
+    mcp_tool_names: set[str],
+) -> bool:
+    if message.get("error"):
+        raise RuntimeError(_gemini_live_error_message(message))
+
+    tool_call = message.get("toolCall")
+    if isinstance(tool_call, dict):
+        function_calls = tool_call.get("functionCalls") or []
+        responses = [
+            await _call_gemini_live_tool(
+                function_call=call,
+                bridge=bridge,
+                local_tools=local_tools,
+                mcp_tool_names=mcp_tool_names,
+            )
+            for call in function_calls
+            if isinstance(call, dict)
+        ]
+        if responses:
+            await provider_ws.send(json.dumps({"toolResponse": {"functionResponses": responses}}))
+
+    server_content = message.get("serverContent")
+    if not isinstance(server_content, dict):
+        return False
+
+    input_transcription = server_content.get("inputTranscription")
+    if isinstance(input_transcription, dict):
+        text = str(input_transcription.get("text") or "")
+        if text:
+            turn.transcript = _append_gemini_live_text(turn.transcript, text)
+            if websocket:
+                await _send_ws_json(websocket, {"type": "partial", "text": turn.transcript.strip()})
+
+    output_transcription = server_content.get("outputTranscription")
+    if isinstance(output_transcription, dict):
+        text = str(output_transcription.get("text") or "")
+        if text:
+            turn.speech = _append_gemini_live_text(turn.speech, text)
+
+    model_turn = server_content.get("modelTurn")
+    parts = model_turn.get("parts") if isinstance(model_turn, dict) else []
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        text = str(part.get("text") or "")
+        if text and not output_transcription:
+            turn.speech = _append_gemini_live_text(turn.speech, text)
+        inline = part.get("inlineData") or part.get("inline_data")
+        if isinstance(inline, dict) and inline.get("data"):
+            media_type = str(inline.get("mimeType") or inline.get("mime_type") or "audio/pcm;rate=24000")
+            turn.audio_sample_rate = int(
+                _mime_param(media_type, "rate") or _mime_param(media_type, "sample_rate") or 24000
+            )
+            turn.audio_chunks.append(base64.b64decode(str(inline["data"])))
+
+    return bool(server_content.get("turnComplete"))
+
+
+async def _send_gemini_live_audio_queue(
+    provider_ws,
+    queue: "asyncio.Queue[bytes | None]",
+    *,
+    sample_rate: int,
+) -> None:
+    await provider_ws.send(json.dumps({"realtimeInput": {"activityStart": {}}}))
+    while True:
+        chunk = await queue.get()
+        if chunk is None:
+            break
+        payload = _pcm_stream_payload(chunk)
+        if not payload:
+            continue
+        await provider_ws.send(
+            json.dumps(
+                {
+                    "realtimeInput": {
+                        "audio": {
+                            "data": base64.b64encode(payload).decode("ascii"),
+                            "mimeType": f"audio/pcm;rate={sample_rate or DEFAULT_HA_STT_SAMPLE_RATE}",
+                        }
+                    }
+                }
+            )
+        )
+    await provider_ws.send(json.dumps({"realtimeInput": {"activityEnd": {}}}))
+
+
+async def _run_gemini_live_ha_turn(
+    *,
+    turn: HALiveTurn,
+    queue: "asyncio.Queue[bytes | None]",
+    websocket: WebSocket | None,
+    config: RuntimeConfig,
+    flow: FlowConfig,
+    integration: IntegrationConfig,
+    input_sample_rate: int,
+) -> None:
+    started_at = time.perf_counter()
+    bridge: HomeAssistantMCPBridge | None = None
+    mcp_tools_schema: ToolsSchema | None = None
+    try:
+        local_tool_schemas = [schema for schema in [_web_search_tool_schema(config, flow)] if schema]
+        local_tools = {schema.name: schema for schema in local_tool_schemas}
+        if flow.mcp_enabled and config.effective_mcp_token:
+            bridge = HomeAssistantMCPBridge(
+                config.effective_mcp_url,
+                config.effective_mcp_token,
+                flow.mcp_tool_allowlist,
+            )
+            try:
+                await bridge.start()
+                mcp_tools_schema = await bridge.tools_schema(
+                    cache_enabled=config.mcp_tools_cache_enabled,
+                    cache_ttl_seconds=config.mcp_tools_cache_ttl_seconds,
+                )
+            except Exception as err:
+                logger.warning("Starting Gemini Live HA Assist bridge without MCP tools: {}", err)
+                with suppress(Exception):
+                    await bridge.close()
+                bridge = None
+        tools_schema = _merge_tools_schema(mcp_tools_schema, local_tool_schemas)
+        mcp_tool_names = {
+            tool.name for tool in (mcp_tools_schema.standard_tools if mcp_tools_schema else [])
+        }
+        api_key = _integration_api_key(
+            integration,
+            "Gemini Live HA Assist",
+            os.getenv("GOOGLE_API_KEY", ""),
+        )
+        url = (
+            "wss://generativelanguage.googleapis.com/ws/"
+            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+            f"?key={quote(api_key, safe='')}"
+        )
+        async with _websocket_connect(url, {}) as provider_ws:
+            await provider_ws.send(
+                json.dumps({"setup": _gemini_live_ha_setup(config, flow, integration, tools_schema)})
+            )
+            async with asyncio.timeout(10):
+                while True:
+                    raw = await provider_ws.recv()
+                    message = json.loads(raw)
+                    if message.get("setupComplete") is not None:
+                        break
+                    if message.get("error"):
+                        raise RuntimeError(_gemini_live_error_message(message))
+
+            sender_task = asyncio.create_task(
+                _send_gemini_live_audio_queue(provider_ws, queue, sample_rate=input_sample_rate)
+            )
+            try:
+                async with asyncio.timeout(HA_LIVE_RESULT_TIMEOUT_SECONDS):
+                    async for raw in provider_ws:
+                        message = json.loads(raw)
+                        complete = await _handle_gemini_live_message(
+                            websocket=websocket,
+                            provider_ws=provider_ws,
+                            message=message,
+                            turn=turn,
+                            bridge=bridge,
+                            local_tools=local_tools,
+                            mcp_tool_names=mcp_tool_names,
+                        )
+                        if complete:
+                            break
+            finally:
+                sender_task.cancel()
+                with suppress(Exception):
+                    await sender_task
+        _remember_ha_live_transcript(turn)
+        _remember_ha_live_speech(turn)
+        turn.transcript_ready.set()
+        logger.info(
+            "Gemini Live HA Assist turn finished flow={} transcript={} speech={} audio_bytes={} duration_ms={:.0f}",
+            flow.id,
+            _text_fingerprint(turn.transcript),
+            _text_fingerprint(turn.speech),
+            len(turn.audio),
+            (time.perf_counter() - started_at) * 1000,
+        )
+    except Exception as err:
+        turn.error = str(err)
+        logger.warning("Gemini Live HA Assist bridge failed for flow {}: {}", flow.id, err)
+    finally:
+        if not turn.transcript_ready.is_set():
+            turn.transcript_ready.set()
+        turn.done.set()
+        if bridge:
+            with suppress(Exception):
+                await bridge.close()
+
+
+def _start_gemini_live_ha_turn(
+    *,
+    config: RuntimeConfig,
+    flow: FlowConfig,
+    integration: IntegrationConfig,
+    websocket: WebSocket | None,
+    input_sample_rate: int,
+) -> tuple[HALiveTurn, "asyncio.Queue[bytes | None]"]:
+    turn = HALiveTurn(flow_id=flow.id, provider="gemini-live")
+    queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=32)
+    turn.task = asyncio.create_task(
+        _run_gemini_live_ha_turn(
+            turn=turn,
+            queue=queue,
+            websocket=websocket,
+            config=config,
+            flow=flow,
+            integration=integration,
+            input_sample_rate=input_sample_rate,
+        )
+    )
+    return turn, queue
+
+
+async def _wait_for_ha_live_transcript(turn: HALiveTurn) -> str:
+    with suppress(TimeoutError):
+        async with asyncio.timeout(HA_LIVE_TRANSCRIPT_TIMEOUT_SECONDS):
+            await turn.transcript_ready.wait()
+    return turn.transcript.strip()
+
+
+async def _ha_live_conversation_result(
+    turn: HALiveTurn,
+    *,
+    conversation_id: str | None,
+) -> dict[str, Any] | None:
+    async with asyncio.timeout(HA_LIVE_RESULT_TIMEOUT_SECONDS):
+        await turn.done.wait()
+    if turn.error or not turn.speech.strip():
+        return None
+    _remember_ha_live_speech(turn)
+    return {
+        "speech": turn.speech.strip(),
+        "conversation_id": conversation_id,
+        "continue_conversation": False,
+        "error": "",
+        "source": "gemini_live_ha_bridge",
+    }
+
+
+async def _ha_live_tts_audio(turn: HALiveTurn) -> tuple[bytes, str, str] | None:
+    async with asyncio.timeout(HA_LIVE_RESULT_TIMEOUT_SECONDS):
+        await turn.done.wait()
+    if turn.error or not turn.audio:
+        return None
+    return (
+        _wav_from_pcm(
+            turn.audio,
+            sample_rate=turn.audio_sample_rate or 24000,
+            sample_width=2,
+            channels=1,
+        ),
+        "audio/wav",
+        "wav",
+    )
 
 
 async def _openai_realtime_transcribe_stream(
