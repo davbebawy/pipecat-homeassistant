@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.47
+
+- Reduced Home Assistant Assist latency for Gemini Live bridge turns by
+  completing the bridge on Gemini Live `generationComplete` instead of waiting
+  for `turnComplete`, which can include the model's simulated realtime playback
+  delay.
+- Gemini Live HA Assist bridge responses now set `continue_conversation=true`
+  so Home Assistant frontends that support continuous conversation can resume
+  listening after the answer.
+- Added the Gemini Live completion reason to HA Assist bridge logs.
+
 ## 0.1.46
 
 - Fixed the raw Gemini Live WebSocket setup payload used by the Home Assistant

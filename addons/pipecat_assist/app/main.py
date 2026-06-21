@@ -1793,7 +1793,7 @@ async def _handle_gemini_live_message(
     bridge: HomeAssistantMCPBridge | None,
     local_tools: dict[str, FunctionSchema],
     mcp_tool_names: set[str],
-) -> bool:
+) -> str:
     if message.get("error"):
         raise RuntimeError(_gemini_live_error_message(message))
 
@@ -1815,7 +1815,7 @@ async def _handle_gemini_live_message(
 
     server_content = message.get("serverContent")
     if not isinstance(server_content, dict):
-        return False
+        return ""
 
     input_transcription = server_content.get("inputTranscription")
     if isinstance(input_transcription, dict):
@@ -1847,7 +1847,11 @@ async def _handle_gemini_live_message(
             )
             turn.audio_chunks.append(base64.b64decode(str(inline["data"])))
 
-    return bool(server_content.get("turnComplete"))
+    if server_content.get("generationComplete"):
+        return "generation_complete"
+    if server_content.get("turnComplete"):
+        return "turn_complete"
+    return ""
 
 
 async def _send_gemini_live_audio_queue(
@@ -1942,11 +1946,12 @@ async def _run_gemini_live_ha_turn(
             sender_task = asyncio.create_task(
                 _send_gemini_live_audio_queue(provider_ws, queue, sample_rate=input_sample_rate)
             )
+            completion_reason = ""
             try:
                 async with asyncio.timeout(HA_LIVE_RESULT_TIMEOUT_SECONDS):
                     async for raw in provider_ws:
                         message = json.loads(raw)
-                        complete = await _handle_gemini_live_message(
+                        completion_reason = await _handle_gemini_live_message(
                             websocket=websocket,
                             provider_ws=provider_ws,
                             message=message,
@@ -1955,7 +1960,7 @@ async def _run_gemini_live_ha_turn(
                             local_tools=local_tools,
                             mcp_tool_names=mcp_tool_names,
                         )
-                        if complete:
+                        if completion_reason:
                             break
             finally:
                 sender_task.cancel()
@@ -1965,8 +1970,9 @@ async def _run_gemini_live_ha_turn(
         _remember_ha_live_speech(turn)
         turn.transcript_ready.set()
         logger.info(
-            "Gemini Live HA Assist turn finished flow={} transcript={} speech={} audio_bytes={} duration_ms={:.0f}",
+            "Gemini Live HA Assist turn finished flow={} completion={} transcript={} speech={} audio_bytes={} duration_ms={:.0f}",
             flow.id,
+            completion_reason or "unknown",
             _text_fingerprint(turn.transcript),
             _text_fingerprint(turn.speech),
             len(turn.audio),
@@ -2028,7 +2034,7 @@ async def _ha_live_conversation_result(
     return {
         "speech": turn.speech.strip(),
         "conversation_id": conversation_id,
-        "continue_conversation": False,
+        "continue_conversation": True,
         "error": "",
         "source": "gemini_live_ha_bridge",
     }
