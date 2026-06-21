@@ -4,6 +4,9 @@ on:
   release:
     types:
       - published
+  push:
+    tags:
+      - "v*"
 
 env:
   ARCHITECTURES: '["amd64", "aarch64"]'
@@ -44,7 +47,10 @@ jobs:
         id: release
         shell: bash
         run: |
-          release_tag="${{ github.event.release.tag_name }}"
+          release_tag="${GITHUB_REF_NAME}"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            release_tag="${{ github.event.release.tag_name }}"
+          fi
           app_version="${release_tag#v}"
 
           {
@@ -81,7 +87,10 @@ jobs:
         id: release
         shell: bash
         run: |
-          release_tag="${{ github.event.release.tag_name }}"
+          release_tag="${GITHUB_REF_NAME}"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            release_tag="${{ github.event.release.tag_name }}"
+          fi
           app_version="${release_tag#v}"
 
           {
