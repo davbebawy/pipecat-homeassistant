@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.74
+
+- Restore stable widget transcription handling while keeping backend RTVI
+  streaming STT events available.
+- Prefer cleaned assistant output/transcription events over raw LLM token
+  deltas in the add-on assistant and Lovelace card.
+- Keep browser SpeechRecognition as the primary widget transcript source when
+  available, filtering server-side interim STT deltas to avoid random spacing.
+
 ## 0.1.73
 
 - Make RTVI transcript and assistant text streams explicit for realtime

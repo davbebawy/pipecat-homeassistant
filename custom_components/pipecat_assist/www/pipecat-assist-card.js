@@ -1,4 +1,4 @@
-const PIPECAT_ASSIST_CARD_VERSION = "0.1.73";
+const PIPECAT_ASSIST_CARD_VERSION = "0.1.74";
 const DEFAULT_ACCENT_HEX = "#206cff";
 const DEFAULT_AUDIO_BUFFER_MS = 120;
 const STREAM_FADE_GROUPS = 4;
@@ -301,10 +301,10 @@ function firstString(...values) {
 }
 
 function rtviAssistantTextPriority(type) {
-  if (type === "bot-llm-text") return 4;
-  if (type === "bot-output") return 3;
-  if (type === "bot-transcription") return 2;
-  if (type === "bot-tts-text") return 1;
+  if (type === "bot-output") return 4;
+  if (type === "bot-transcription") return 3;
+  if (type === "bot-tts-text") return 2;
+  if (type === "bot-llm-text") return 1;
   if (type.startsWith("assistant-")) return 2;
   return 0;
 }
@@ -443,7 +443,6 @@ class PipecatAssistCard extends HTMLElement {
     this.localSpeechEnding = false;
     this.localSpeechPausedForAssistant = false;
     this.localSpeechResumeTimer = undefined;
-    this.serverTranscriptionActive = false;
     this.endConversationPending = false;
     this.endConversationTimer = undefined;
     this.endConversationStopping = false;
@@ -595,7 +594,6 @@ class PipecatAssistCard extends HTMLElement {
     this.lastUserTextAt = 0;
     this.botSpeaking = false;
     this.ignoreLocalSpeechUntil = 0;
-    this.serverTranscriptionActive = false;
     this.clearEndConversationRequest();
     this.resetTranscriptState();
   }
@@ -1122,7 +1120,6 @@ class PipecatAssistCard extends HTMLElement {
   startLocalSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
-    if (this.serverTranscriptionActive) return;
     if (this.localSpeechPausedForAssistant || this.assistantTurnActive || this.botSpeaking) return;
     this.stopLocalSpeechRecognition();
     try {
@@ -1559,6 +1556,12 @@ class PipecatAssistCard extends HTMLElement {
     }
   }
 
+  shouldIgnoreServerUserTranscription(finalEvent) {
+    const hasBrowserSpeech = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (hasBrowserSpeech) return true;
+    return !finalEvent;
+  }
+
   applyAssistantText(text, priority) {
     if (isLikelyTranscriptEcho(text, mergeTranscript(this.currentUserText, this.partialTranscript))) return;
     const normalizedText = normalizeTranscriptText(text);
@@ -1637,15 +1640,12 @@ class PipecatAssistCard extends HTMLElement {
       || Boolean(message.data?.final || message.is_final || message.final);
 
     if (isRtviUserTextType(type)) {
-      if (type === "user-transcription") {
-        this.serverTranscriptionActive = true;
-        this.stopLocalSpeechRecognition();
-        this.cancelLocalSpeechResume();
-      }
+      if (type === "user-transcription" && this.shouldIgnoreServerUserTranscription(finalEvent)) return;
       this.applyUserText(text, finalEvent);
       return;
     }
 
+    if (type === "bot-llm-text" && !finalEvent) return;
     if (isRtviAssistantTextType(type) || (label.includes("bot") && !type.startsWith("user-"))) {
       this.applyAssistantText(text, rtviAssistantTextPriority(type) || 1);
     }
