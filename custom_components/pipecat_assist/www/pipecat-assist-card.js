@@ -1,4 +1,4 @@
-const PIPECAT_ASSIST_CARD_VERSION = "0.1.61";
+const PIPECAT_ASSIST_CARD_VERSION = "0.1.62";
 const HA_ASSIST_SAMPLE_RATE_FALLBACK = 48000;
 const OPUS_AUDIO_QUALITY_PARAMS = {
   minptime: "20",
@@ -108,6 +108,33 @@ function isLikelyTranscriptEcho(text, reference) {
   const existingWords = new Set(transcriptWords(reference));
   const matched = incomingWords.filter((word) => existingWords.has(word)).length;
   return matched >= 2 && matched / incomingWords.length >= 0.75;
+}
+
+function isTranscriptFragment(text, reference) {
+  const incoming = compactTranscript(text);
+  const existing = compactTranscript(reference);
+  if (!incoming || !existing || incoming.length > existing.length) return false;
+  if (existing.includes(incoming)) return true;
+  const incomingWords = transcriptWords(text);
+  if (incoming.length > 12 || incomingWords.length !== 1) return false;
+  return transcriptWords(reference)
+    .map((word) => compactTranscript(word))
+    .some((word) => word && (word.startsWith(incoming) || incoming.startsWith(word)));
+}
+
+function hasTerminalTranscriptPunctuation(text) {
+  return /[.!?]\s*$/.test(normalizeTranscriptText(text));
+}
+
+function mergeAssistantTurnText(existing, incoming, priority, currentPriority) {
+  const current = normalizeTranscriptText(existing);
+  const text = normalizeTranscriptText(incoming);
+  if (!text) return current;
+  if (!current) return text;
+
+  if (hasTerminalTranscriptPunctuation(current) && isTranscriptFragment(text, current)) return current;
+  if (priority > currentPriority && isTranscriptFragment(current, text)) return text;
+  return mergeTranscript(current, text);
 }
 
 function firstString(...values) {
@@ -257,6 +284,10 @@ class PipecatAssistCard extends HTMLElement {
     this.assistantTurnText = "";
     this.assistantTurnPriority = 0;
     this.assistantTurnActive = false;
+    this.assistantLastTurnText = "";
+    this.assistantLastTurnPriority = 0;
+    this.assistantLastTurnFinishedAt = 0;
+    this.lastUserTextAt = 0;
     this.botSpeaking = false;
     this.ignoreLocalSpeechUntil = 0;
     this.render();
@@ -529,7 +560,12 @@ class PipecatAssistCard extends HTMLElement {
           else interimText = mergeTranscript(interimText, text);
         }
         if (this.shouldIgnoreLocalSpeech(finalText || interimText)) return;
-        if (finalText) this.userTranscript = mergeTranscript(this.userTranscript, finalText);
+        if (finalText) {
+          this.lastUserTextAt = Date.now();
+          this.userTranscript = mergeTranscript(this.userTranscript, finalText);
+        } else if (interimText) {
+          this.lastUserTextAt = Date.now();
+        }
         this.partialTranscript = normalizeTranscriptText(interimText);
         this.render();
         if (shouldEndConversation(`${this.userTranscript} ${this.partialTranscript}`)) {
@@ -693,6 +729,10 @@ class PipecatAssistCard extends HTMLElement {
       this.assistantTurnText = "";
       this.assistantTurnPriority = 0;
       this.assistantTurnActive = false;
+      this.assistantLastTurnText = "";
+      this.assistantLastTurnPriority = 0;
+      this.assistantLastTurnFinishedAt = 0;
+      this.lastUserTextAt = 0;
       this.botSpeaking = false;
       this.ignoreLocalSpeechUntil = 0;
       this.cancelLocalSpeechResume();
@@ -835,6 +875,11 @@ class PipecatAssistCard extends HTMLElement {
     }
     this.assistantTranscript = normalizeTranscriptText(this.assistantTranscript);
     this.assistantTurnBase = this.assistantTranscript;
+    if (this.assistantTurnText) {
+      this.assistantLastTurnText = this.assistantTurnText;
+      this.assistantLastTurnPriority = this.assistantTurnPriority;
+      this.assistantLastTurnFinishedAt = Date.now();
+    }
     this.assistantTurnText = "";
     this.assistantTurnPriority = 0;
     this.assistantTurnActive = false;
@@ -866,6 +911,7 @@ class PipecatAssistCard extends HTMLElement {
 
   applyUserText(text, finalEvent) {
     if (isLikelyTranscriptEcho(text, this.assistantTranscript)) return;
+    this.lastUserTextAt = Date.now();
     if (finalEvent) {
       this.userTranscript = mergeTranscript(this.userTranscript, text);
       this.partialTranscript = "";
@@ -880,16 +926,41 @@ class PipecatAssistCard extends HTMLElement {
 
   applyAssistantText(text, priority) {
     if (isLikelyTranscriptEcho(text, mergeTranscript(this.userTranscript, this.partialTranscript))) return;
+    const normalizedText = normalizeTranscriptText(text);
+    if (!normalizedText) return;
+    const now = Date.now();
+    const recentAssistantReplayWindow = this.assistantLastTurnFinishedAt
+      && this.lastUserTextAt < this.assistantLastTurnFinishedAt
+      && now - this.assistantLastTurnFinishedAt < 4500;
+    const assistantReference = mergeTranscript(this.assistantTranscript, this.assistantTurnText);
+    if (
+      (hasTerminalTranscriptPunctuation(this.assistantTurnText)
+        && isTranscriptFragment(normalizedText, this.assistantTurnText))
+      || (recentAssistantReplayWindow && isTranscriptFragment(normalizedText, this.assistantLastTurnText))
+      || (recentAssistantReplayWindow && priority <= (this.assistantLastTurnPriority || 0)
+        && isTranscriptFragment(normalizedText, assistantReference))
+    ) return;
     this.ensureAssistantTurn();
     if (this.assistantTurnFinishTimer) {
       clearTimeout(this.assistantTurnFinishTimer);
       this.assistantTurnFinishTimer = undefined;
     }
-    if (priority > (this.assistantTurnPriority || 0)) {
+    const previousTurnPriority = this.assistantTurnPriority || 0;
+    if (priority > previousTurnPriority) {
       this.assistantTurnPriority = priority;
-      this.assistantTurnText = normalizeTranscriptText(text);
+      this.assistantTurnText = mergeAssistantTurnText(
+        this.assistantTurnText,
+        normalizedText,
+        priority,
+        previousTurnPriority,
+      );
     } else if (priority === this.assistantTurnPriority) {
-      this.assistantTurnText = mergeTranscript(this.assistantTurnText, text);
+      this.assistantTurnText = mergeAssistantTurnText(
+        this.assistantTurnText,
+        normalizedText,
+        priority,
+        this.assistantTurnPriority,
+      );
     } else {
       return;
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.62
+
+- Suppress delayed assistant transcript fragments in the Lovelace card so
+  higher-level bot responses are not followed by repeated starts or middle
+  chunks from lower-level LLM/TTS streams.
+- Keep the fuller assistant caption when a later higher-priority event only
+  repeats a fragment of the same turn.
+
 ## 0.1.61
 
 - Pause browser-local Lovelace card speech recognition while the assistant is
