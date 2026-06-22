@@ -181,13 +181,17 @@ resource and then add a manual card:
 ```yaml
 lovelace:
   resources:
-    - url: /pipecat_assist/pipecat-assist-card.js?v=0.1.62
+    - url: /pipecat_assist/pipecat-assist-card.js?v=0.1.63
       type: module
 ```
 
 ```yaml
 type: custom:pipecat-assist-card
 name: Pipecat Assist
+animation_on_idle: true
+compact_mode: false
+accent_color: "#206cff"
+audio_buffer_ms: 120
 ```
 
 The card talks to Home Assistant at `/api/pipecat_assist/config` and
@@ -196,6 +200,12 @@ add-on and keeps the add-on Ingress token out of dashboard YAML. The card uses
 the active pipeline selected in the add-on. If you configure more than one
 Pipecat Assist integration entry, add `entry_id` to point the card at a
 specific entry.
+
+`animation_on_idle` keeps the visualizer moving while nobody is speaking.
+Set it to `false` for a still idle card. `compact_mode` hides the transcript.
+`accent_color` accepts a HEX color. `audio_buffer_ms` is a browser WebRTC
+jitter-buffer hint; raising it can smooth choppy playback at the cost of a
+little extra delay.
 
 ### Gemini troubleshooting
 

@@ -114,6 +114,20 @@ component, and uses the same WebRTC assistant path as the add-on demo. It calls
 the custom component proxy by default, so dashboard YAML does not need an
 Ingress token or flow ID.
 
+Useful card options:
+
+```yaml
+type: custom:pipecat-assist-card
+name: Pipecat Assist
+animation_on_idle: true
+compact_mode: false
+accent_color: "#206cff"
+audio_buffer_ms: 120
+```
+
+`compact_mode` hides the transcript. `audio_buffer_ms` hints the browser WebRTC
+jitter buffer; higher values can smooth playback with a small latency tradeoff.
+
 ## Audio debugging
 
 Open **Runtime**, enable **Record audio in/out**, save, and then

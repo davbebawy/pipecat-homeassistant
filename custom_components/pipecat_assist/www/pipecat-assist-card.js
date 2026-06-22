@@ -1,4 +1,6 @@
-const PIPECAT_ASSIST_CARD_VERSION = "0.1.62";
+const PIPECAT_ASSIST_CARD_VERSION = "0.1.63";
+const DEFAULT_ACCENT_HEX = "#206cff";
+const DEFAULT_AUDIO_BUFFER_MS = 120;
 const HA_ASSIST_SAMPLE_RATE_FALLBACK = 48000;
 const OPUS_AUDIO_QUALITY_PARAMS = {
   minptime: "20",
@@ -28,6 +30,30 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeHexColor(value, fallback = DEFAULT_ACCENT_HEX) {
+  const raw = String(value || "").trim();
+  const short = /^#?([0-9a-f]{3})$/i.exec(raw);
+  if (short) {
+    const [r, g, b] = short[1].split("");
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  const full = /^#?([0-9a-f]{6})$/i.exec(raw);
+  return full ? `#${full[1].toLowerCase()}` : fallback;
+}
+
+function hexToRgb(value) {
+  const hex = normalizeHexColor(value).slice(1);
+  return {
+    r: Number.parseInt(hex.slice(0, 2), 16),
+    g: Number.parseInt(hex.slice(2, 4), 16),
+    b: Number.parseInt(hex.slice(4, 6), 16),
+  };
 }
 
 function normalizeTranscriptText(value) {
@@ -298,7 +324,46 @@ class PipecatAssistCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 3;
+    return this.compactMode() ? 2 : 3;
+  }
+
+  compactMode() {
+    return this.config.compact_mode === true;
+  }
+
+  animationOnIdle() {
+    return this.config.animation_on_idle !== false;
+  }
+
+  accentHex() {
+    return normalizeHexColor(this.config.accent_color || this.config.color);
+  }
+
+  accentRgb() {
+    return hexToRgb(this.accentHex());
+  }
+
+  audioBufferMs() {
+    const configured = this.config.audio_buffer_ms ?? this.config.buffer_ms ?? DEFAULT_AUDIO_BUFFER_MS;
+    const value = Number(configured);
+    if (!Number.isFinite(value)) return DEFAULT_AUDIO_BUFFER_MS;
+    return clamp(Math.round(value), 0, 4000);
+  }
+
+  statusLabel() {
+    return {
+      connected: "Connected",
+      connecting: "Connecting",
+      error: "Needs attention",
+      idle: "Ready",
+      requesting: "Microphone",
+    }[this.state] || this.state || "Ready";
+  }
+
+  statusDetail(label = this.statusLabel()) {
+    const detail = String(this.detail || "").trim();
+    if (!detail || detail.toLowerCase() === label.toLowerCase()) return "";
+    return detail.replace(new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.?\\s*`, "i"), "");
   }
 
   baseUrl() {
@@ -379,6 +444,30 @@ class PipecatAssistCard extends HTMLElement {
     } catch {
       // Some mobile WebViews throw while tearing down a live MediaStream.
     }
+  }
+
+  applyRemoteAudioBuffer(receiver) {
+    const targetMs = this.audioBufferMs();
+    if (!receiver || !targetMs) return;
+    try {
+      if ("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = targetMs;
+    } catch {
+      // Browser support for jitterBufferTarget is still uneven.
+    }
+    const targetSeconds = targetMs / 1000;
+    for (const legacyName of ["playoutDelayHint", "jitterBufferDelayHint"]) {
+      try {
+        if (legacyName in receiver) receiver[legacyName] = targetSeconds;
+      } catch {
+        // Ignore unsupported WebRTC delay hints.
+      }
+    }
+  }
+
+  applyRemoteAudioBuffers(peer = this.peer) {
+    peer?.getReceivers?.()
+      .filter((receiver) => receiver.track?.kind === "audio")
+      .forEach((receiver) => this.applyRemoteAudioBuffer(receiver));
   }
 
   ensureVisualizerInput(name, stream) {
@@ -472,19 +561,26 @@ class PipecatAssistCard extends HTMLElement {
       }
 
       const ctx = canvas.getContext("2d");
-      const time = performance.now() / 1000;
+      const accent = this.accentRgb();
       const localEnergy = this.visualizerEnergyFor("local");
       const remoteEnergy = this.visualizerEnergyFor("remote");
-      const targetEnergy = Math.max(localEnergy, remoteEnergy, running ? 0.06 : 0.025);
+      const audioActive = Math.max(localEnergy, remoteEnergy) > 0.018
+        || this.botSpeaking
+        || this.assistantTurnActive
+        || Boolean(this.partialTranscript);
+      const idleEnergy = this.animationOnIdle() ? (running ? 0.06 : 0.025) : 0;
+      const targetEnergy = Math.max(localEnergy, remoteEnergy, idleEnergy);
       this.visualizerEnergy = (this.visualizerEnergy || 0) * 0.82 + targetEnergy * 0.18;
       const energy = this.visualizerEnergy;
+      const time = (this.animationOnIdle() || audioActive) ? performance.now() / 1000 : 0;
 
       ctx.clearRect(0, 0, width, height);
       const horizon = height * 0.68;
       const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, "rgba(96, 173, 255, 0.02)");
-      gradient.addColorStop(0.62, "rgba(45, 119, 255, 0.16)");
-      gradient.addColorStop(1, "rgba(64, 132, 255, 0.52)");
+      gradient.addColorStop(0, `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0)`);
+      gradient.addColorStop(0.24, `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.025)`);
+      gradient.addColorStop(0.68, `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.18)`);
+      gradient.addColorStop(1, `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.55)`);
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, width, height);
 
@@ -493,9 +589,9 @@ class PipecatAssistCard extends HTMLElement {
       ctx.scale(1, 0.32);
       ctx.beginPath();
       ctx.arc(0, 0, width * (0.5 + energy * 0.07), 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(146, 198, 255, ${0.34 + energy * 0.28})`;
+      ctx.strokeStyle = `rgba(190, 220, 255, ${0.34 + energy * 0.28})`;
       ctx.lineWidth = Math.max(1, 1.4 * dpr);
-      ctx.shadowColor = "rgba(69, 139, 255, 0.88)";
+      ctx.shadowColor = `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.88)`;
       ctx.shadowBlur = 18 * dpr + energy * 30 * dpr;
       ctx.stroke();
       ctx.restore();
@@ -519,8 +615,8 @@ class PipecatAssistCard extends HTMLElement {
       };
 
       drawWave("rgba(255, 255, 255, ALPHA)", 0, 10 * dpr + energy * 34 * dpr, 1.35, 0.52 + energy * 0.42);
-      drawWave("rgba(93, 169, 255, ALPHA)", 1.7, 16 * dpr + energy * 46 * dpr, 1.1, 0.42 + energy * 0.32);
-      drawWave("rgba(32, 108, 255, ALPHA)", 3.1, 20 * dpr + energy * 58 * dpr, 0.9, 0.28 + energy * 0.28);
+      drawWave(`rgba(${Math.min(255, accent.r + 61)}, ${Math.min(255, accent.g + 61)}, 255, ALPHA)`, 1.7, 16 * dpr + energy * 46 * dpr, 1.1, 0.42 + energy * 0.32);
+      drawWave(`rgba(${accent.r}, ${accent.g}, ${accent.b}, ALPHA)`, 3.1, 20 * dpr + energy * 58 * dpr, 0.9, 0.28 + energy * 0.28);
 
       ctx.shadowBlur = 0;
       const barCount = 34;
@@ -530,7 +626,7 @@ class PipecatAssistCard extends HTMLElement {
         const pulse = 0.5 + 0.5 * Math.sin(time * 3.4 + index * 0.72);
         const barHeight = (4 + pulse * 20 * energy) * dpr * envelope;
         const x = progress * width;
-        ctx.fillStyle = `rgba(160, 211, 255, ${0.08 + energy * 0.26})`;
+        ctx.fillStyle = `rgba(${Math.min(255, accent.r + 128)}, ${Math.min(255, accent.g + 103)}, 255, ${0.08 + energy * 0.26})`;
         ctx.fillRect(x, horizon - barHeight, Math.max(1, 2 * dpr), barHeight);
       }
     }
@@ -777,6 +873,7 @@ class PipecatAssistCard extends HTMLElement {
 
       peer.ontrack = (event) => {
         if (event.track.kind !== "audio") return;
+        this.applyRemoteAudioBuffer(event.receiver);
         this.remoteStream = event.streams[0] || new MediaStream([event.track]);
         this.ensureVisualizer();
         this.attachAudio();
@@ -820,6 +917,7 @@ class PipecatAssistCard extends HTMLElement {
       if (!response.ok) throw new Error(await response.text());
       const answer = await response.json();
       await peer.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+      this.applyRemoteAudioBuffers(peer);
       this.detail = "Connecting audio";
       this.render();
       this.attachAudio();
@@ -1028,8 +1126,21 @@ class PipecatAssistCard extends HTMLElement {
     if (!this.shadowRoot) return;
     const running = ["requesting", "connecting", "connected"].includes(this.state);
     const needsAudioTap = running && this.audioBlocked;
-    const userText = mergeTranscript(this.userTranscript, this.partialTranscript) || "Say something to Pipecat Assist.";
+    const compact = this.compactMode();
+    const accentHex = this.accentHex();
+    const accent = this.accentRgb();
+    const accentRgb = `${accent.r}, ${accent.g}, ${accent.b}`;
+    const statusLabel = this.statusLabel();
+    const statusDetail = this.statusDetail(statusLabel);
+    const userText = mergeTranscript(this.userTranscript, this.partialTranscript);
     const assistantText = this.assistantTranscript || (running ? "Listening..." : "Ready when you are.");
+    const transcriptHtml = compact ? "" : `
+          <div class="transcript-frame">
+            <div class="transcript-scroll" aria-live="polite">
+              ${userText ? `<div class="message user">${escapeHtml(userText)}</div>` : ""}
+              <div class="message assistant">${escapeHtml(assistantText)}</div>
+            </div>
+          </div>`;
     this.shadowRoot.innerHTML = `
       <style>
         ha-card {
@@ -1040,18 +1151,24 @@ class PipecatAssistCard extends HTMLElement {
             linear-gradient(180deg, rgba(10, 36, 67, 0.96) 0%, rgba(5, 15, 29, 0.98) 54%, rgba(4, 10, 19, 1) 100%);
           color: #f7fbff;
           box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
-          border: 1px solid rgba(91, 157, 255, 0.34);
+          border: 1px solid rgba(${accentRgb}, 0.34);
+          --pipecat-accent: ${accentHex};
+          --pipecat-accent-rgb: ${accentRgb};
         }
         .wrap {
           display: grid;
-          grid-template-rows: auto minmax(100px, 1fr) 142px;
-          min-height: 360px;
-          gap: 16px;
+          grid-template-rows: auto auto minmax(96px, auto) 174px;
+          min-height: 352px;
+          gap: 12px;
           padding: 24px 24px 0;
           position: relative;
           overflow: hidden;
         }
-        .head, .actions, .transcript, .visualizer-shell, .version {
+        .wrap.compact {
+          grid-template-rows: auto auto 174px;
+          min-height: 270px;
+        }
+        .head, .actions, .session-status, .transcript-frame, .visualizer-shell, .version {
           position: relative;
           z-index: 1;
         }
@@ -1071,32 +1188,74 @@ class PipecatAssistCard extends HTMLElement {
           justify-content: space-between;
           gap: 12px;
         }
+        .title {
+          min-width: 0;
+        }
         h3 {
           margin: 0;
           font-size: 18px;
           line-height: 1.2;
           color: #ffffff;
         }
-        .status {
-          display: grid;
-          gap: 4px;
-          color: rgba(226, 239, 255, 0.74);
+        .session-status {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
           font-size: 13px;
+          color: rgba(226, 239, 255, 0.74);
         }
-        .transcript {
+        .status-pill {
+          flex: 0 0 auto;
+          display: inline-flex;
+          align-items: center;
+          min-height: 24px;
+          padding: 3px 9px;
+          border-radius: 999px;
+          color: #ffffff;
+          font-size: 12px;
+          font-weight: 800;
+          background: rgba(${accentRgb}, 0.18);
+          border: 1px solid rgba(${accentRgb}, 0.38);
+          box-shadow: 0 0 22px rgba(${accentRgb}, 0.18);
+        }
+        .status-detail {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .transcript-frame {
+          max-width: 100%;
+          min-height: 96px;
+          max-height: 142px;
+          overflow: hidden;
+        }
+        .transcript-scroll {
           display: grid;
           align-content: start;
-          gap: 10px;
-          min-height: 112px;
-          max-width: 100%;
+          gap: 9px;
+          max-height: 142px;
+          overflow-y: auto;
+          padding: 3px 4px 18px 0;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(${accentRgb}, 0.55) transparent;
+          -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 12px, #000 calc(100% - 22px), transparent 100%);
+          mask-image: linear-gradient(180deg, transparent 0, #000 12px, #000 calc(100% - 22px), transparent 100%);
           font-size: 17px;
           line-height: 1.38;
           text-shadow: 0 1px 16px rgba(0, 0, 0, 0.35);
           overflow-wrap: anywhere;
         }
+        .transcript-scroll::-webkit-scrollbar { width: 4px; }
+        .transcript-scroll::-webkit-scrollbar-thumb {
+          border-radius: 999px;
+          background: rgba(${accentRgb}, 0.5);
+        }
+        .transcript-scroll::-webkit-scrollbar-track { background: transparent; }
         .message {
-          border-radius: 16px;
-          padding: 10px 12px;
+          border-radius: 14px;
+          padding: 9px 11px;
           backdrop-filter: blur(10px);
         }
         .message.user {
@@ -1110,14 +1269,17 @@ class PipecatAssistCard extends HTMLElement {
           justify-self: stretch;
           color: #ffffff;
           font-weight: 700;
-          background: linear-gradient(135deg, rgba(47, 119, 255, 0.16), rgba(255, 255, 255, 0.07));
-          border: 1px solid rgba(129, 189, 255, 0.16);
+          background: linear-gradient(135deg, rgba(${accentRgb}, 0.18), rgba(255, 255, 255, 0.07));
+          border: 1px solid rgba(${accentRgb}, 0.24);
         }
         .visualizer-shell {
-          min-height: 142px;
-          margin: 0 -24px;
+          position: relative;
+          min-height: 174px;
+          margin: -18px -24px 0;
           overflow: hidden;
           align-self: end;
+          -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 30px, #000 100%);
+          mask-image: linear-gradient(180deg, transparent 0, #000 30px, #000 100%);
         }
         .visualizer-shell::before {
           content: "";
@@ -1130,8 +1292,8 @@ class PipecatAssistCard extends HTMLElement {
           border-radius: 50% 50% 0 0;
           border-top: 1px solid rgba(168, 209, 255, 0.58);
           box-shadow:
-            0 -18px 46px rgba(49, 117, 255, 0.36),
-            inset 0 28px 70px rgba(51, 126, 255, 0.36);
+            0 -18px 46px rgba(${accentRgb}, 0.36),
+            inset 0 28px 70px rgba(${accentRgb}, 0.36);
           pointer-events: none;
         }
         .visualizer-shell::after {
@@ -1139,13 +1301,13 @@ class PipecatAssistCard extends HTMLElement {
           position: absolute;
           inset: 0;
           background:
-            linear-gradient(180deg, transparent 0%, rgba(39, 110, 255, 0.15) 55%, rgba(49, 118, 255, 0.48) 100%);
+            linear-gradient(180deg, transparent 0%, rgba(${accentRgb}, 0.12) 58%, rgba(${accentRgb}, 0.48) 100%);
           pointer-events: none;
         }
         .visualizer {
           display: block;
           width: 100%;
-          height: 142px;
+          height: 174px;
           position: relative;
           z-index: 1;
         }
@@ -1155,12 +1317,12 @@ class PipecatAssistCard extends HTMLElement {
           border: 0;
           border-radius: 999px;
           padding: 0 18px;
-          color: ${running ? "#ffffff" : "#07111f"};
-          background: ${running ? "#d94b40" : "#ffffff"};
+          color: #ffffff;
+          background: ${running ? "#d94b40" : accentHex};
           font: inherit;
           font-weight: 700;
           cursor: pointer;
-          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+          box-shadow: ${running ? "0 12px 28px rgba(0, 0, 0, 0.28)" : `0 12px 30px rgba(${accentRgb}, 0.36)`};
           transition: transform 140ms ease, filter 140ms ease, box-shadow 140ms ease;
         }
         .actions {
@@ -1181,24 +1343,21 @@ class PipecatAssistCard extends HTMLElement {
         audio { display: none; }
       </style>
       <ha-card>
-        <div class="wrap">
+        <div class="${compact ? "wrap compact" : "wrap"}">
           <div class="head">
-            <div>
+            <div class="title">
               <h3>${this.config.name || "Pipecat Assist"}</h3>
-              <div class="status">
-                <strong>${this.state === "idle" ? "Ready" : this.state}</strong>
-                <span>${this.detail}</span>
-              </div>
             </div>
             <div class="actions">
               ${needsAudioTap ? "<button class=\"secondary audio-button\">Enable audio</button>" : ""}
               <button class="main-button">${running ? "Stop" : "Talk"}</button>
             </div>
           </div>
-          <div class="transcript" aria-live="polite">
-            <div class="message user">${escapeHtml(userText)}</div>
-            <div class="message assistant">${escapeHtml(assistantText)}</div>
+          <div class="session-status">
+            <span class="status-pill">${escapeHtml(statusLabel)}</span>
+            ${statusDetail ? `<span class="status-detail">${escapeHtml(statusDetail)}</span>` : ""}
           </div>
+          ${transcriptHtml}
           <div class="visualizer-shell" aria-hidden="true">
             <canvas class="visualizer"></canvas>
           </div>
@@ -1208,6 +1367,8 @@ class PipecatAssistCard extends HTMLElement {
       </ha-card>
     `;
     this.audio = this.shadowRoot.querySelector("audio");
+    const transcript = this.shadowRoot.querySelector(".transcript-scroll");
+    if (transcript) transcript.scrollTop = transcript.scrollHeight;
     this.ensureVisualizer();
     this.attachAudio();
     const audioButton = this.shadowRoot.querySelector(".audio-button");

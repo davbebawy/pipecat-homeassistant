@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.63
+
+- Keep the Lovelace card height stable by scrolling longer transcripts inside
+  the card with a fade at the edges.
+- Add Lovelace card options for compact mode, idle animation, accent color, and
+  WebRTC audio buffer hinting.
+- Blend the visualizer canvas into the card background so the top edge is no
+  longer visibly cut off.
+
 ## 0.1.62
 
 - Suppress delayed assistant transcript fragments in the Lovelace card so
