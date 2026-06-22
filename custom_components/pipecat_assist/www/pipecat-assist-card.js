@@ -1,4 +1,4 @@
-const PIPECAT_ASSIST_CARD_VERSION = "0.1.60";
+const PIPECAT_ASSIST_CARD_VERSION = "0.1.61";
 const HA_ASSIST_SAMPLE_RATE_FALLBACK = 48000;
 const OPUS_AUDIO_QUALITY_PARAMS = {
   minptime: "20",
@@ -248,6 +248,8 @@ class PipecatAssistCard extends HTMLElement {
     this.remoteStream = undefined;
     this.audioBlocked = false;
     this.localSpeechEnding = false;
+    this.localSpeechPausedForAssistant = false;
+    this.localSpeechResumeTimer = undefined;
     this.userTranscript = "";
     this.assistantTranscript = "";
     this.partialTranscript = "";
@@ -507,6 +509,7 @@ class PipecatAssistCard extends HTMLElement {
   startLocalSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
+    if (this.localSpeechPausedForAssistant || this.assistantTurnActive || this.botSpeaking) return;
     this.stopLocalSpeechRecognition();
     try {
       const recognition = new SpeechRecognition();
@@ -515,6 +518,7 @@ class PipecatAssistCard extends HTMLElement {
       recognition.interimResults = true;
       recognition.lang = String(this.sessionLanguage() || navigator.language || "en").replace("_", "-");
       recognition.onresult = (event) => {
+        if (this.localSpeechPausedForAssistant || this.assistantTurnActive || this.botSpeaking) return;
         let finalText = "";
         let interimText = "";
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -538,7 +542,13 @@ class PipecatAssistCard extends HTMLElement {
       };
       recognition.onend = () => {
         this.localSpeechRecognition = undefined;
-        if (this.localSpeechEnding || !["requesting", "connecting", "connected"].includes(this.state)) return;
+        if (
+          this.localSpeechEnding
+          || this.localSpeechPausedForAssistant
+          || this.assistantTurnActive
+          || this.botSpeaking
+          || !["requesting", "connecting", "connected"].includes(this.state)
+        ) return;
         window.setTimeout(() => this.startLocalSpeechRecognition(), 250);
       };
       this.localSpeechRecognition = recognition;
@@ -554,6 +564,8 @@ class PipecatAssistCard extends HTMLElement {
     this.localSpeechEnding = true;
     if (!recognition) return;
     try {
+      recognition.onresult = null;
+      recognition.onerror = null;
       recognition.onend = null;
       recognition.stop();
     } catch {
@@ -563,6 +575,53 @@ class PipecatAssistCard extends HTMLElement {
         // Ignore browser-specific SpeechRecognition teardown errors.
       }
     }
+  }
+
+  cancelLocalSpeechResume() {
+    if (this.localSpeechResumeTimer) {
+      clearTimeout(this.localSpeechResumeTimer);
+      this.localSpeechResumeTimer = undefined;
+    }
+    this.localSpeechPausedForAssistant = false;
+  }
+
+  pauseLocalSpeechForAssistant() {
+    if (this.localSpeechResumeTimer) {
+      clearTimeout(this.localSpeechResumeTimer);
+      this.localSpeechResumeTimer = undefined;
+    }
+    this.localSpeechPausedForAssistant = true;
+    this.partialTranscript = "";
+    if (this.shadowRoot) this.render();
+    const recognition = this.localSpeechRecognition;
+    this.localSpeechRecognition = undefined;
+    this.localSpeechEnding = true;
+    if (!recognition) return;
+    try {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      recognition.stop();
+    } catch {
+      try {
+        recognition.abort();
+      } catch {
+        // Ignore browser-specific SpeechRecognition teardown errors.
+      }
+    }
+  }
+
+  resumeLocalSpeechAfterAssistant(delayMs = 450) {
+    if (!this.localSpeechPausedForAssistant) return;
+    if (this.localSpeechResumeTimer) clearTimeout(this.localSpeechResumeTimer);
+    this.localSpeechResumeTimer = window.setTimeout(() => {
+      this.localSpeechResumeTimer = undefined;
+      if (!this.localSpeechPausedForAssistant) return;
+      this.localSpeechPausedForAssistant = false;
+      if (["requesting", "connecting", "connected"].includes(this.state) && !this.localSpeechRecognition) {
+        this.startLocalSpeechRecognition();
+      }
+    }, delayMs);
   }
 
   async waitForAudioSessionRelease() {
@@ -596,8 +655,9 @@ class PipecatAssistCard extends HTMLElement {
     this.peer?.close();
     this.peer = undefined;
     this.stopLocalSpeechRecognition();
+    this.cancelLocalSpeechResume();
     this.stopVisualizer();
-    this.finishAssistantTurn();
+    this.finishAssistantTurn(false);
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = undefined;
     this.remoteStream?.getTracks().forEach((track) => track.stop());
@@ -635,6 +695,7 @@ class PipecatAssistCard extends HTMLElement {
       this.assistantTurnActive = false;
       this.botSpeaking = false;
       this.ignoreLocalSpeechUntil = 0;
+      this.cancelLocalSpeechResume();
       this.render();
       this.resetAudioElement();
       await this.waitForAudioSessionRelease();
@@ -753,6 +814,7 @@ class PipecatAssistCard extends HTMLElement {
       clearTimeout(this.assistantTurnFinishTimer);
       this.assistantTurnFinishTimer = undefined;
     }
+    this.pauseLocalSpeechForAssistant();
     if (this.assistantTurnActive) {
       this.botSpeaking = true;
       this.ignoreLocalSpeechUntil = Date.now() + 1200;
@@ -766,7 +828,7 @@ class PipecatAssistCard extends HTMLElement {
     this.ignoreLocalSpeechUntil = Date.now() + 1200;
   }
 
-  finishAssistantTurn() {
+  finishAssistantTurn(resumeLocalSpeech = true) {
     if (this.assistantTurnFinishTimer) {
       clearTimeout(this.assistantTurnFinishTimer);
       this.assistantTurnFinishTimer = undefined;
@@ -778,6 +840,9 @@ class PipecatAssistCard extends HTMLElement {
     this.assistantTurnActive = false;
     this.botSpeaking = false;
     this.ignoreLocalSpeechUntil = Date.now() + 900;
+    if (resumeLocalSpeech && ["requesting", "connecting", "connected"].includes(this.state)) {
+      this.resumeLocalSpeechAfterAssistant(450);
+    }
   }
 
   scheduleAssistantTurnFinish(delayMs = 1000) {

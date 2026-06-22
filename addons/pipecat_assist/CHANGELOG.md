@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.61
+
+- Pause browser-local Lovelace card speech recognition while the assistant is
+  speaking, then resume it after the assistant turn ends, so TTS audio is not
+  captured as user transcript text.
+
 ## 0.1.60
 
 - Fix Lovelace card RTVI transcript routing so `user-llm-text` is displayed as
