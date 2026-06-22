@@ -4,13 +4,112 @@
 
 # Pipecat Home Assistant
 
-Pipecat Home Assistant is a Home Assistant app repository for a realtime,
-multimodal assistant built on [Pipecat](https://github.com/pipecat-ai/pipecat).
-The project replaces the synchronous Assist audio path with a Pipecat WebRTC
-session while keeping Home Assistant device control through the native Home
-Assistant MCP server.
+Pipecat Assist brings realtime, multimodal Pipecat assistants to Home
+Assistant. It lets you talk to speech-to-speech realtime models, build custom
+Pipecat pipelines from cloud and local AI services, and keep Home Assistant
+device control through MCP.
 
-## What is included
+## What Pipecat Assist offers
+
+- **Realtime voice assistants** over WebRTC, with Gemini Live as the default
+  first-run speech-to-speech pipeline.
+- **Custom pipeline builder** for speech-to-speech and composed realtime flows:
+  mix STT, LLM, TTS, memory, web search, Home Assistant tools, and Pipecat
+  Flows in one runtime profile.
+- **Cloud provider integrations** for Gemini, OpenAI, Soniox, Deepgram,
+  Speechmatics, Cartesia, Gradium, ElevenLabs, Google Cloud TTS, AWS Bedrock,
+  AWS Nova Sonic, and OpenAI-compatible endpoints.
+- **Local AI options** through Ollama, local runtime endpoints, and custom
+  OpenAI-compatible services.
+- **Multiple MCP servers**, including the built-in Home Assistant MCP server,
+  the Home Assistant MCP add-on, and additional custom MCP endpoints.
+- **Visual Pipecat Flow editing** for composed realtime pipelines, including
+  conditional conversation graphs and MCP-backed tool calls.
+- **Audio debugging, session memory, and web search** as first-class runtime
+  features rather than hidden provider toggles.
+
+## Where you can use it
+
+- **Pipecat Assist add-on UI**: a full-width assistant card for quick browser
+  testing and pipeline development.
+- **Lovelace dashboard card**: a dedicated WebRTC card with live transcript,
+  smooth scrolling, and the most responsive full-duplex conversation path.
+- **Home Assistant Assist**: the custom component exposes Pipecat Assist as
+  Conversation, Speech-to-text, and Text-to-speech.
+- **Home Assistant AI Tasks / AI Actions**: Pipecat Assist can be selected for
+  generated-data tasks where your Home Assistant version exposes AI Task
+  entities.
+- **Pipecat ESP32 satellites**: the add-on exposes a SmallWebRTC endpoint for
+  satellite clients.
+
+The Home Assistant Assist path uses an advanced Pipecat Live Bridge so HA
+Assist can talk to speech-to-speech realtime assistants such as Gemini Live and
+OpenAI Realtime. Because HA Assist itself is still not a full-duplex WebRTC
+client, this bridge cannot provide true barge-in while the assistant is
+speaking. The Lovelace card and add-on assistant card remain the more
+responsive realtime experience.
+
+## Installation
+
+1. Add this repository URL to Home Assistant **Settings > Add-ons > Add-on
+   Store > Repositories**:
+
+   ```text
+   https://github.com/kyvaith/pipecat-homeassistant
+   ```
+
+2. Add the same repository URL to **HACS > Custom repositories** as an
+   **Integration**.
+
+3. Install the **Pipecat Assist** add-on/app from the Home Assistant add-on
+   store.
+
+4. Install the **Pipecat Assist** custom component from HACS, then restart Home
+   Assistant when HACS asks you to.
+
+5. Add the Pipecat Assist integration in **Settings > Devices & services**. The
+   integration should auto-detect the add-on URL; keep the detected value unless
+   you run the add-on in a custom network layout.
+
+6. In **Settings > Voice assistants**, select **Pipecat Assist** in all three
+   categories:
+
+   - Conversation agent / LLM
+   - Speech-to-text
+   - Text-to-speech
+
+   Use the single Pipecat Assist language entry. The actual voice, language,
+   and provider settings are configured inside the add-on pipeline.
+
+7. Optional: where your Home Assistant version exposes **AI Tasks** or **AI
+   Actions**, select **Pipecat Assist** for LLM task handling and generated
+   data. If your HA build exposes image-generation provider slots, configure
+   them there according to the capabilities of your selected pipeline/provider.
+
+8. Open the Pipecat Assist add-on UI and configure a provider:
+
+   - Easiest start: create a Google AI Studio API key and paste it into
+     **Integrations > Google Gemini Live**.
+   - Advanced setup: create or edit a custom pipeline with your preferred cloud
+     providers, local AI endpoints, and MCP servers.
+
+9. Add the **Pipecat Assist** Lovelace card to a dashboard and start talking.
+
+## Screenshots
+
+![Pipecat Assist Lovelace card on a Home Assistant dashboard](docs/screenshots/lovelace-card-dashboard.png)
+
+![Pipecat Assist add-on assistant card](docs/screenshots/addon-assistant-card.png)
+
+![Pipeline builder with realtime steps](docs/screenshots/pipeline-builder.png)
+
+![Integration catalog](docs/screenshots/integrations-catalog.png)
+
+![Pipecat Flow editor](docs/screenshots/pipecat-flow-editor.png)
+
+![Pipecat Flow editor wide view](docs/screenshots/pipecat-flow-editor-wide.png)
+
+## Repository layout
 
 - `addons/pipecat_assist` - the Home Assistant app/add-on. It runs Pipecat,
   exposes a configuration UI through Ingress, serves `/api/offer` for
@@ -18,7 +117,7 @@ Assistant MCP server.
 - `addons/pipecat_assist/ui-src` - the React source for the pipeline editor
   shipped as static assets inside the add-on image.
 - `custom_components/pipecat_assist` - a Home Assistant integration that
-  exposes Pipecat Assist as Conversation, STT, and TTS entities, plus a
+  exposes Pipecat Assist as Conversation, STT, TTS, AI Task entities, and the
   Lovelace WebRTC card asset.
 - `.github/workflows` - CI and GHCR publishing workflows for multi-arch Home
   Assistant images.
@@ -38,25 +137,22 @@ flowchart LR
     HAMCP --> Assist["HA Assist APIs and exposed entities"]
 ```
 
-## Quick start
+## Quick start after installation
 
-1. Add this repository to Home Assistant as an app/add-on repository.
-2. Install **Pipecat Assist**.
-3. Enable Home Assistant's **Model Context Protocol Server** integration.
-4. Start the add-on and open the web UI.
-5. Open **Integrations > Home Assistant MCP** and click **Test MCP**. In a normal
-   Home Assistant add-on install, Pipecat Assist uses the Supervisor token
-   automatically.
-6. Configure model providers:
-   Gemini Live is the default, and additional providers such as OpenAI,
-   Soniox, Deepgram, Cartesia, Gradium, Speechmatics, AWS, ElevenLabs, Google
-   Cloud TTS HTTP fallback/Streaming, OpenAI-compatible endpoints, Ollama, local
-   runtimes, and Web Search can be added from **Integrations**.
-7. Choose or create a pipeline. The built-in catalog includes realtime
+1. Start the add-on and open the web UI.
+2. Open **Integrations > Home Assistant MCP** and click **Test MCP**. In a
+   normal Home Assistant add-on install, Pipecat Assist uses the Supervisor
+   token automatically.
+3. Configure model providers. Gemini Live is the default, and additional
+   providers such as OpenAI, Soniox, Deepgram, Cartesia, Gradium, Speechmatics,
+   AWS, ElevenLabs, Google Cloud TTS HTTP fallback/Streaming,
+   OpenAI-compatible endpoints, Ollama, local runtimes, and Web Search can be
+   added from **Integrations**.
+4. Choose or create a pipeline. The built-in catalog includes realtime
    speech-to-speech profiles and composed realtime profiles such as
    `Soniox + OpenAI + Cartesia`, `Deepgram + Gemini + Google TTS`, and
    `Speechmatics + AWS Nova Pro + ElevenLabs`.
-8. Build Pipecat ESP32 firmware with the generated
+5. Build Pipecat ESP32 firmware with the generated
    `PIPECAT_SMALLWEBRTC_URL`.
 
 Home Assistant MCP access uses the add-on's Supervisor token by default. Use
