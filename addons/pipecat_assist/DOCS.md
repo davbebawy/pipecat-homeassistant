@@ -168,6 +168,23 @@ WebRTC card.
 7. Type or speak a Home Assistant request in Assist and check the add-on logs
    for MCP tool calls and model errors.
 
+### Home Assistant AI Tasks image generation
+
+Pipecat Assist exposes the Home Assistant AI Task entity with generated-data
+and image-generation support. For images:
+
+1. Open **Integrations > Google Imagen** or **Integrations > fal Image
+   Generation**.
+2. Enable the integration, enter the provider API key, and choose the image
+   model.
+3. Open **Runtime > Image task provider** and either keep **First enabled image
+   provider** or select the exact provider to use.
+4. In Home Assistant AI Tasks or AI Actions, choose **Pipecat Assist** for
+   image generation.
+
+Moondream is a Pipecat vision service for image understanding, not a
+text-to-image provider, so it is not listed as an image-generation backend.
+
 ### Lovelace WebRTC card
 
 The custom component automatically registers the dashboard card module when the
@@ -181,7 +198,7 @@ resource and then add a manual card:
 ```yaml
 lovelace:
   resources:
-    - url: /pipecat_assist/pipecat-assist-card.js?v=0.1.67
+    - url: /pipecat_assist/pipecat-assist-card.js?v=0.1.68
       type: module
 ```
 

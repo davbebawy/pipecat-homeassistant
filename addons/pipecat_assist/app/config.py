@@ -52,6 +52,8 @@ DEFAULT_AWS_BEDROCK_MODEL = "amazon.nova-pro-v1:0"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
 DEFAULT_SONIOX_MODEL = "stt-rt-v5"
 DEFAULT_SPEECHMATICS_MODEL = "enhanced"
+DEFAULT_GOOGLE_IMAGEN_MODEL = "imagen-4.0-generate-001"
+DEFAULT_FAL_IMAGE_MODEL = "fal-ai/fast-sdxl"
 LEGACY_GEMINI_TEXT_MODELS = {
     "gemini-3.5-flash",
     "models/gemini-3.5-flash",
@@ -139,6 +141,8 @@ class IntegrationConfig(BaseModel):
         "ollama",
         "local_runtime",
         "web_search",
+        "google_imagen",
+        "fal_image",
         "home_assistant_mcp",
         "ha_mcp",
         "mcp_server",
@@ -362,6 +366,22 @@ def default_integrations() -> list[IntegrationConfig]:
             default_model=os.getenv("WEB_SEARCH_MODEL", DEFAULT_WEB_SEARCH_MODEL),
         ),
         IntegrationConfig(
+            id="google-imagen",
+            name="Google Imagen",
+            kind="google_imagen",
+            enabled=bool(os.getenv("GOOGLE_API_KEY")),
+            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            default_model=os.getenv("GOOGLE_IMAGEN_MODEL", DEFAULT_GOOGLE_IMAGEN_MODEL),
+        ),
+        IntegrationConfig(
+            id="fal-image",
+            name="fal Image Generation",
+            kind="fal_image",
+            enabled=bool(os.getenv("FAL_KEY")),
+            api_key=os.getenv("FAL_KEY", ""),
+            default_model=os.getenv("FAL_IMAGE_MODEL", DEFAULT_FAL_IMAGE_MODEL),
+        ),
+        IntegrationConfig(
             id="ha-mcp",
             name="Home Assistant MCP",
             kind="home_assistant_mcp",
@@ -513,7 +533,7 @@ class FlowConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Persisted runtime configuration edited by the web UI."""
 
-    version: int = 18
+    version: int = 19
     openai_api_key: str = ""
     text_model: str = DEFAULT_GEMINI_TEXT_MODEL
     ha_mcp_url: str = ""
@@ -530,6 +550,7 @@ class RuntimeConfig(BaseModel):
     session_memory_max_messages: int = Field(default=12, ge=0, le=100)
     mcp_tools_cache_enabled: bool = True
     mcp_tools_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)
+    ai_image_provider_id: str = ""
     selected_flow_id: str = "home-default"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     integrations: list[IntegrationConfig] = Field(default_factory=default_integrations)
@@ -730,6 +751,7 @@ def default_config_from_environment() -> RuntimeConfig:
         session_memory_max_messages=max(0, min(100, _env_int("SESSION_MEMORY_MAX_MESSAGES", 12))),
         mcp_tools_cache_enabled=_env_bool("MCP_TOOLS_CACHE_ENABLED", True),
         mcp_tools_cache_ttl_seconds=max(0, min(86400, _env_int("MCP_TOOLS_CACHE_TTL_SECONDS", 300))),
+        ai_image_provider_id=os.getenv("AI_IMAGE_PROVIDER_ID", ""),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         flows=[flow],
     )
@@ -1239,6 +1261,32 @@ def _repair_provider_defaults(config: RuntimeConfig) -> bool:
             web_search.api_key = os.getenv("OPENAI_API_KEY", "")
             changed = True
 
+    google_imagen = config.integration("google-imagen")
+    if google_imagen:
+        if google_imagen.name != "Google Imagen":
+            google_imagen.name = "Google Imagen"
+            changed = True
+        if not google_imagen.default_model:
+            google_imagen.default_model = os.getenv("GOOGLE_IMAGEN_MODEL", DEFAULT_GOOGLE_IMAGEN_MODEL)
+            changed = True
+        if os.getenv("GOOGLE_API_KEY") and not google_imagen.api_key:
+            google_imagen.api_key = os.getenv("GOOGLE_API_KEY", "")
+            google_imagen.enabled = True
+            changed = True
+
+    fal_image = config.integration("fal-image")
+    if fal_image:
+        if fal_image.name != "fal Image Generation":
+            fal_image.name = "fal Image Generation"
+            changed = True
+        if not fal_image.default_model:
+            fal_image.default_model = os.getenv("FAL_IMAGE_MODEL", DEFAULT_FAL_IMAGE_MODEL)
+            changed = True
+        if os.getenv("FAL_KEY") and not fal_image.api_key:
+            fal_image.api_key = os.getenv("FAL_KEY", "")
+            fal_image.enabled = True
+            changed = True
+
     ha_mcp_server = config.integration("ha-mcp-server")
     if ha_mcp_server:
         if ha_mcp_server.name != "HA MCP Server Add-on":
@@ -1469,6 +1517,11 @@ class ConfigStore:
 
         if config.version < 18:
             config.version = 18
+            changed = _repair_provider_defaults(config) or changed
+            changed = True
+
+        if config.version < 19:
+            config.version = 19
             changed = _repair_provider_defaults(config) or changed
             changed = True
 

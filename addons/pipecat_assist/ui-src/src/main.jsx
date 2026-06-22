@@ -13,6 +13,7 @@ import {
   Download,
   GitBranch,
   Home,
+  Image as ImageIcon,
   Mic2,
   Moon,
   Plus,
@@ -95,6 +96,9 @@ const UI_TRANSLATIONS = {
   },
 };
 
+UI_TRANSLATIONS.pl["Image task provider"] = "\u0179r\u00f3d\u0142o obraz\u00f3w AI";
+UI_TRANSLATIONS.pl["First enabled image provider"] = "Pierwszy w\u0142\u0105czony provider obraz\u00f3w";
+
 function detectLocale() {
   const candidates = [
     document.documentElement.lang,
@@ -136,7 +140,7 @@ const OPUS_AUDIO_QUALITY_PARAMS = {
   usedtx: "0",
 };
 const OPUS_AUDIO_REMOVE_PARAMS = new Set(["stereo", "sprop-stereo"]);
-const ASSISTANT_CARD_VERSION = "0.1.67";
+const ASSISTANT_CARD_VERSION = "0.1.68";
 const ASSISTANT_CARD_ACCENT_HEX = "#206cff";
 const ASSISTANT_CARD_AUDIO_BUFFER_MS = 120;
 const STREAM_FADE_GROUPS = 4;
@@ -517,6 +521,8 @@ const DEEPGRAM_MODEL = "nova-3";
 const SONIOX_MODEL = "stt-rt-v5";
 const SPEECHMATICS_MODEL = "enhanced";
 const WEB_SEARCH_MODEL = "gpt-5.5";
+const GOOGLE_IMAGEN_MODEL = "imagen-4.0-generate-001";
+const FAL_IMAGE_MODEL = "fal-ai/fast-sdxl";
 const OPENAI_REALTIME_VOICES = [
   "alloy",
   "ash",
@@ -551,6 +557,8 @@ const providerKinds = [
   ["ollama", "Ollama", Cpu],
   ["local_runtime", "Local runtime", Cpu],
   ["web_search", "Web Search", Search],
+  ["google_imagen", "Google Imagen", ImageIcon],
+  ["fal_image", "fal Image Generation", ImageIcon],
   ["home_assistant_mcp", "Home Assistant MCP", Home],
   ["ha_mcp", "HA MCP Server Add-on", Home],
   ["mcp_server", "Custom MCP Server", Server],
@@ -564,6 +572,8 @@ const protectedIntegrationIds = [
   "ha-mcp",
   "ha-mcp-server",
   "web-search",
+  "google-imagen",
+  "fal-image",
 ];
 
 const languageIntegrationKinds = [
@@ -583,6 +593,7 @@ const languageIntegrationKinds = [
 const speedIntegrationKinds = ["openai", "openai_cloud", "google_cloud_tts", "elevenlabs"];
 const ttsStreamingIntegrationKinds = ["cartesia", "soniox", "gradium", "google_streaming_tts"];
 const webSearchProviderKinds = ["openai_cloud", "gemini_cloud"];
+const imageGenerationProviderKinds = ["google_imagen", "fal_image"];
 
 const stepTypes = [
   ["transport", "Transport", Radio, "neutral"],
@@ -1424,6 +1435,8 @@ function providerDefaults(provider) {
   }
   if (provider === "speechmatics") return { model: SPEECHMATICS_MODEL, text_model: "", voice: "" };
   if (provider === "web_search" || provider === "web-search") return { model: WEB_SEARCH_MODEL, text_model: WEB_SEARCH_MODEL, voice: "" };
+  if (provider === "google_imagen" || provider === "google-imagen") return { model: GOOGLE_IMAGEN_MODEL, text_model: GOOGLE_IMAGEN_MODEL, voice: "" };
+  if (provider === "fal_image" || provider === "fal-image") return { model: FAL_IMAGE_MODEL, text_model: FAL_IMAGE_MODEL, voice: "" };
   if (provider === "openai_compatible" || provider === "openai-compatible") return { model: "", text_model: "", voice: "" };
   return {};
 }
@@ -1581,6 +1594,7 @@ function ensureShape(config) {
     86400,
     Math.max(0, Number(shaped.mcp_tools_cache_ttl_seconds ?? 300)),
   );
+  shaped.ai_image_provider_id = shaped.ai_image_provider_id || "";
   shaped.flows = (shaped.flows?.length ? shaped.flows : [clone(defaultFlow)]).map((flow) => {
     const merged = { ...clone(defaultFlow), ...flow };
     if (!merged.conversation_flow?.nodes?.length) merged.conversation_flow = clone(defaultFlow.conversation_flow);
@@ -1701,6 +1715,8 @@ function integrationSummary(integration, config = null) {
       "gradium",
       "speechmatics",
       "elevenlabs",
+      "google_imagen",
+      "fal_image",
     ].includes(integration.kind)
   ) {
     const status = secretStatus(integration, "api_key");
@@ -4113,6 +4129,29 @@ function IntegrationSettings({ integration, config, updateIntegration, modelOpti
     return <WebSearchSettings integration={integration} config={config} updateIntegration={updateIntegration} modelOptions={modelOptions} loadModelOptions={loadModelOptions} />;
   }
 
+  if (["google_imagen", "fal_image"].includes(integration.kind)) {
+    const keyLabel = integration.kind === "google_imagen" ? "Google API key" : "fal API key";
+    return (
+      <>
+        <SettingsSection title="Image generation" status={secretStatus(integration, "api_key")}>
+          <SecretSetting integration={integration} field="api_key" label={keyLabel} updateIntegration={updateIntegration} />
+          <ModelSetting
+            integration={integration}
+            field="default_model"
+            label="Image model"
+            updateIntegration={updateIntegration}
+            modelOptions={modelOptions}
+            loadModelOptions={loadModelOptions}
+            capability="image"
+          />
+        </SettingsSection>
+        <div className="empty-state wide">
+          This provider is used by Home Assistant AI Tasks image-generation requests, not by the realtime voice pipeline.
+        </div>
+      </>
+    );
+  }
+
   if (["soniox", "deepgram", "gradium", "speechmatics"].includes(integration.kind)) {
     return (
       <SettingsSection title={kindLabel(integration.kind)} status={secretStatus(integration, "api_key")}>
@@ -5777,6 +5816,22 @@ function RuntimeSettingsPanel({ config, updateConfig }) {
             <option value="60">1 minute</option>
             <option value="300">5 minutes</option>
             <option value="900">15 minutes</option>
+          </select>
+        </Field>
+        <Field label={t("Image task provider")}>
+          <select
+            value={config.ai_image_provider_id || ""}
+            onChange={(event) => updateConfig((draft) => ({ ...draft, ai_image_provider_id: event.target.value }))}
+          >
+            <option value="">{t("First enabled image provider")}</option>
+            {config.integrations
+              .filter((integration) => imageGenerationProviderKinds.includes(integration.kind))
+              .map((integration) => (
+                <option key={integration.id} value={integration.id}>
+                  {integration.name}
+                  {integration.enabled ? "" : " (disabled)"}
+                </option>
+              ))}
           </select>
         </Field>
       </div>

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.68
+
+- Expose Pipecat Assist as a Home Assistant AI Tasks image-generation provider.
+- Add Google Imagen and fal Image Generation integrations with dedicated API
+  key/model configuration and a Runtime image-provider selector.
+- Encode Pipecat image frames into HA-compatible image bytes with MIME type and
+  metadata, and document why Moondream is reserved for future vision tasks.
+
 ## 0.1.67
 
 - Replace the add-on Assistant voice test with the same Pipecat Assist card

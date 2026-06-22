@@ -26,7 +26,7 @@ from starlette.staticfiles import StaticFiles
 
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import ErrorFrame, LLMRunFrame, URLImageRawFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -64,6 +64,8 @@ from app.config import (
     DEFAULT_GEMINI_TTS_MODEL,
     GEMINI_TTS_FALLBACK_MODELS,
     DEFAULT_GOOGLE_TTS_VOICE,
+    DEFAULT_GOOGLE_IMAGEN_MODEL,
+    DEFAULT_FAL_IMAGE_MODEL,
     DEFAULT_OPENAI_TEXT_MODEL,
     DEFAULT_OPENAI_REALTIME_MODEL,
     DEFAULT_OPENAI_REALTIME_VOICE,
@@ -137,6 +139,7 @@ HA_TTS_BRIDGE_KINDS = {
     "openai_cloud",
     "soniox",
 }
+IMAGE_GENERATION_KINDS = {"google_imagen", "fal_image"}
 PROVIDER_RETRY_STATUSES = {429, 500, 502, 503, 504}
 TTS_PREFETCH_TTL_SECONDS = 90
 TTS_PREFETCH: dict[tuple[str, str, str], tuple[float, Any]] = {}
@@ -616,6 +619,10 @@ def _static_models_for(integration: IntegrationConfig, capability: str) -> list[
         values = [integration.default_voice or DEFAULT_GOOGLE_TTS_VOICE]
     elif integration.kind == "web_search":
         values = [integration.default_model or DEFAULT_WEB_SEARCH_MODEL, DEFAULT_WEB_SEARCH_MODEL]
+    elif integration.kind == "google_imagen":
+        values = [integration.default_model or DEFAULT_GOOGLE_IMAGEN_MODEL, DEFAULT_GOOGLE_IMAGEN_MODEL]
+    elif integration.kind == "fal_image":
+        values = [integration.default_model or DEFAULT_FAL_IMAGE_MODEL, DEFAULT_FAL_IMAGE_MODEL]
     elif integration.kind == "aws_nova_sonic":
         values = [integration.default_realtime_model or DEFAULT_AWS_NOVA_SONIC_MODEL]
     elif integration.kind == "aws_bedrock":
@@ -866,6 +873,167 @@ def _ai_task_prompt(payload: dict[str, Any]) -> str:
     )
 
 
+def _ai_image_task_prompt(payload: dict[str, Any]) -> str:
+    task_name = str(payload.get("task_name") or "Image generation task").strip()
+    instructions = str(payload.get("instructions") or "").strip()
+    return f"{task_name}\n\n{instructions}".strip()
+
+
+def _enabled_image_generation_integration(
+    config: RuntimeConfig,
+    payload: dict[str, Any],
+) -> IntegrationConfig:
+    provider_id = str(payload.get("provider_id") or config.ai_image_provider_id or "").strip()
+    if provider_id:
+        integration = config.integration(provider_id)
+        if not integration:
+            raise HTTPException(status_code=404, detail=f"Image generation integration {provider_id} not found")
+        if integration.kind not in IMAGE_GENERATION_KINDS:
+            raise HTTPException(status_code=400, detail=f"{integration.name} cannot generate images")
+        try:
+            return _require_integration(integration, "Image generation", fields=())
+        except RuntimeError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    for integration in config.integrations:
+        if integration.kind not in IMAGE_GENERATION_KINDS or not integration.enabled:
+            continue
+        try:
+            return _require_integration(integration, "Image generation", fields=())
+        except RuntimeError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    raise HTTPException(
+        status_code=400,
+        detail="No image generation integration is enabled. Enable Google Imagen or fal Image Generation.",
+    )
+
+
+def _google_image_api_key(config: RuntimeConfig, integration: IntegrationConfig) -> str:
+    candidates = [
+        integration.api_key,
+        (config.integration("gemini-cloud").api_key if config.integration("gemini-cloud") else ""),
+        (config.integration("gemini").api_key if config.integration("gemini") else ""),
+        os.getenv("GOOGLE_API_KEY", ""),
+    ]
+    api_key = next((candidate.strip() for candidate in candidates if candidate and candidate.strip()), "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail=f"{integration.name} is missing api_key for image generation")
+    return api_key
+
+
+def _image_frame_size(size: Any) -> tuple[int, int] | None:
+    if not isinstance(size, (list, tuple)) or len(size) != 2:
+        return None
+    try:
+        width = int(size[0])
+        height = int(size[1])
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _encode_image_frame(
+    image_data: bytes,
+    size: Any,
+    image_format: str | None,
+) -> tuple[bytes, str, int | None, int | None]:
+    if not image_data:
+        raise HTTPException(status_code=502, detail="Image provider returned an empty image")
+
+    from PIL import Image
+
+    with suppress(Exception):
+        image = Image.open(BytesIO(image_data))
+        image.load()
+        mime = {
+            "JPEG": "image/jpeg",
+            "PNG": "image/png",
+            "WEBP": "image/webp",
+        }.get(str(image.format or "").upper(), "image/png")
+        return image_data, mime, image.size[0], image.size[1]
+
+    frame_size = _image_frame_size(size)
+    if not frame_size:
+        raise HTTPException(status_code=502, detail="Image provider returned raw image data without size")
+
+    mode = str(image_format or "RGB").strip() or "RGB"
+    try:
+        image = Image.frombytes(mode, frame_size, image_data)
+    except Exception as err:
+        raise HTTPException(status_code=502, detail=f"Image provider returned unsupported image data: {err}") from err
+
+    if image.mode not in {"RGB", "RGBA"}:
+        image = image.convert("RGBA" if "A" in image.mode else "RGB")
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue(), "image/png", image.size[0], image.size[1]
+
+
+async def _run_pipecat_image_generation(
+    config: RuntimeConfig,
+    integration: IntegrationConfig,
+    prompt: str,
+) -> dict[str, Any]:
+    model = (integration.default_model or "").strip()
+    if integration.kind == "google_imagen":
+        from pipecat.services.google.image import GoogleImageGenService
+
+        model = model or DEFAULT_GOOGLE_IMAGEN_MODEL
+        service = GoogleImageGenService(
+            api_key=_google_image_api_key(config, integration),
+            settings=GoogleImageGenService.Settings(model=model, number_of_images=1),
+        )
+    elif integration.kind == "fal_image":
+        import aiohttp
+        from pipecat.services.fal.image import FalImageGenService
+
+        model = model or DEFAULT_FAL_IMAGE_MODEL
+        api_key = _integration_api_key_or_400(integration, "image generation", os.getenv("FAL_KEY", ""))
+        aiohttp_session = aiohttp.ClientSession()
+        service = FalImageGenService(
+            aiohttp_session=aiohttp_session,
+            key=api_key,
+            settings=FalImageGenService.Settings(
+                model=model,
+                num_images=1,
+                image_size="square_hd",
+                format="png",
+            ),
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"{integration.name} cannot generate images")
+
+    session = getattr(service, "_aiohttp_session", None)
+    try:
+        async for frame in service.run_image_gen(prompt):
+            if isinstance(frame, ErrorFrame):
+                detail = getattr(frame, "error", None) or str(frame)
+                raise HTTPException(status_code=502, detail=str(detail))
+            if isinstance(frame, URLImageRawFrame) or hasattr(frame, "image"):
+                encoded, mime_type, width, height = _encode_image_frame(
+                    getattr(frame, "image", b""),
+                    getattr(frame, "size", None),
+                    getattr(frame, "format", None),
+                )
+                return {
+                    "image": encoded,
+                    "mime_type": mime_type,
+                    "width": width,
+                    "height": height,
+                    "model": model,
+                    "revised_prompt": prompt,
+                    "source_url": getattr(frame, "url", None),
+                }
+    finally:
+        if integration.kind == "fal_image" and session:
+            await session.close()
+
+    raise HTTPException(status_code=502, detail=f"{integration.name} did not return an image")
+
+
 @app.post("/api/assist/ai-task")
 async def api_ai_task(payload: dict[str, Any]):
     """Run a Home Assistant AI Task through the selected Pipecat Assist text model."""
@@ -898,6 +1066,38 @@ async def api_ai_task(payload: dict[str, Any]):
     return {
         "conversation_id": result.get("conversation_id") or payload.get("conversation_id"),
         "data": data,
+    }
+
+
+@app.post("/api/assist/ai-task/image")
+async def api_ai_task_image(payload: dict[str, Any]):
+    """Run a Home Assistant AI Task image request through a Pipecat image service."""
+
+    prompt = _ai_image_task_prompt(payload)
+    if not prompt:
+        raise HTTPException(status_code=400, detail="instructions are required")
+
+    config = STORE.load()
+    integration = _enabled_image_generation_integration(config, payload)
+    started_at = time.perf_counter()
+    result = await _run_pipecat_image_generation(config, integration, prompt)
+    logger.info(
+        "HA AI Task image generated provider={} model={} prompt={} bytes={} total_ms={:.0f}",
+        integration.kind,
+        result.get("model") or "",
+        _text_fingerprint(prompt),
+        len(result["image"]),
+        (time.perf_counter() - started_at) * 1000,
+    )
+    return {
+        "conversation_id": payload.get("conversation_id"),
+        "image_base64": base64.b64encode(result["image"]).decode("ascii"),
+        "mime_type": result["mime_type"],
+        "width": result.get("width"),
+        "height": result.get("height"),
+        "model": result.get("model"),
+        "revised_prompt": result.get("revised_prompt"),
+        "source_url": result.get("source_url"),
     }
 
 

@@ -48,6 +48,8 @@ device control through MCP.
   conditional conversation graphs and MCP-backed tool calls.
 - **Audio debugging, session memory, and web search** as first-class runtime
   features rather than hidden provider toggles.
+- **Home Assistant AI Tasks support** for generated data and image-generation
+  tasks, using dedicated image providers such as Google Imagen or fal.
 
 ## Where you can use it
 
@@ -58,8 +60,8 @@ device control through MCP.
 - **Home Assistant Assist**: the custom component exposes Pipecat Assist as
   Conversation, Speech-to-text, and Text-to-speech.
 - **Home Assistant AI Tasks / AI Actions**: Pipecat Assist can be selected for
-  generated-data tasks where your Home Assistant version exposes AI Task
-  entities.
+  generated-data and image-generation tasks where your Home Assistant version
+  exposes AI Task entities.
 - **Pipecat ESP32 satellites**: the add-on exposes a SmallWebRTC endpoint for
   satellite clients.
 
@@ -103,9 +105,11 @@ responsive realtime experience.
    and provider settings are configured inside the add-on pipeline.
 
 7. Optional: where your Home Assistant version exposes **AI Tasks** or **AI
-   Actions**, select **Pipecat Assist** for LLM task handling and generated
-   data. If your HA build exposes image-generation provider slots, configure
-   them there according to the capabilities of your selected pipeline/provider.
+   Actions**, select **Pipecat Assist** for LLM task handling, generated data,
+   and image generation. Configure **Integrations > Google Imagen** or
+   **Integrations > fal Image Generation** in the add-on, then choose the image
+   provider in **Runtime > Image task provider** when you want a specific
+   backend instead of the first enabled one.
 
 8. Open the Pipecat Assist add-on UI and configure a provider:
 
@@ -266,6 +270,13 @@ next step is to integrate Pipecat ESP32 into ESPHome so the device side and the
 Home Assistant add-on become one ecosystem. The direct ESP32 authentication
 path will move toward the standard Home Assistant token flow during that work.
 
+## Vision services
+
+Moondream is a Pipecat vision service for image understanding and visual
+question answering, not a text-to-image generator. It is therefore not exposed
+as a Home Assistant image-generation backend in this release, but it is a good
+candidate for future AI Tasks that analyze image attachments.
+
 ## Development
 
 The add-on source is in `addons/pipecat_assist`.
@@ -294,5 +305,8 @@ docker build -t pipecat-assist:dev addons/pipecat_assist
 - Pipecat Flows: https://github.com/pipecat-ai/pipecat-flows
 - Pipecat Flows Editor: https://github.com/pipecat-ai/pipecat-flows-editor
 - Pipecat ESP32: https://github.com/pipecat-ai/pipecat-esp32
+- Pipecat Google image generation: https://docs.pipecat.ai/api-reference/server/services/image-generation/google
+- Pipecat fal image generation: https://docs.pipecat.ai/api-reference/server/services/image-generation/fal
+- Pipecat Moondream vision service: https://docs.pipecat.ai/api-reference/server/services/vision/moondream
 - Home Assistant MCP server: https://www.home-assistant.io/integrations/mcp_server/
 - Home Assistant app docs: https://developers.home-assistant.io/docs/apps/configuration/

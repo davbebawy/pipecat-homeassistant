@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any
 
 import aiohttp
@@ -14,6 +16,10 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_FLOW_ID, CONF_TOKEN, CONF_URL
+
+SUPPORTED_FEATURES = ai_task.AITaskEntityFeature.GENERATE_DATA
+if hasattr(ai_task.AITaskEntityFeature, "GENERATE_IMAGE"):
+    SUPPORTED_FEATURES |= ai_task.AITaskEntityFeature.GENERATE_IMAGE
 
 
 async def _response_payload(response: aiohttp.ClientResponse) -> dict[str, Any]:
@@ -64,7 +70,7 @@ class PipecatAssistAITaskEntity(ai_task.AITaskEntity):
 
     _attr_has_entity_name = True
     _attr_name = "Pipecat Assist"
-    _attr_supported_features = ai_task.AITaskEntityFeature.GENERATE_DATA
+    _attr_supported_features = SUPPORTED_FEATURES
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -112,4 +118,56 @@ class PipecatAssistAITaskEntity(ai_task.AITaskEntity):
         return ai_task.GenDataTaskResult(
             conversation_id=data.get("conversation_id") or chat_log.conversation_id,
             data=data.get("data"),
+        )
+
+    async def _async_generate_image(
+        self,
+        task: ai_task.GenImageTask,
+        chat_log: conversation.ChatLog,
+    ) -> ai_task.GenImageTaskResult:
+        """Handle a generate image task."""
+
+        url = self._entry.data[CONF_URL].rstrip("/")
+        token = self._entry.data.get(CONF_TOKEN)
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        payload: dict[str, Any] = {
+            "task_name": task.name,
+            "instructions": task.instructions,
+            "conversation_id": chat_log.conversation_id,
+        }
+        if flow_id := self._entry.data.get(CONF_FLOW_ID):
+            payload["flow_id"] = flow_id
+
+        try:
+            async with self._session.post(
+                f"{url}/api/assist/ai-task/image",
+                json=payload,
+                headers=headers,
+            ) as response:
+                data = await _response_payload(response)
+                if response.status >= 400:
+                    raise HomeAssistantError(
+                        data.get("detail") or "Pipecat Assist image generation failed"
+                    )
+        except aiohttp.ClientError as err:
+            raise HomeAssistantError(f"Pipecat Assist is not reachable: {err}") from err
+
+        try:
+            image_data = base64.b64decode(str(data.get("image_base64") or ""), validate=True)
+        except (binascii.Error, ValueError) as err:
+            raise HomeAssistantError("Pipecat Assist returned invalid image data") from err
+        if not image_data:
+            raise HomeAssistantError("Pipecat Assist returned an empty image")
+
+        return ai_task.GenImageTaskResult(
+            conversation_id=data.get("conversation_id") or chat_log.conversation_id,
+            image_data=image_data,
+            mime_type=data.get("mime_type") or "image/png",
+            width=data.get("width"),
+            height=data.get("height"),
+            model=data.get("model"),
+            revised_prompt=data.get("revised_prompt"),
         )
